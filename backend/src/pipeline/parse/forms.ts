@@ -3,6 +3,11 @@ import type { CrawlResult } from "../crawl";
 
 export type FormFieldTag = "input" | "select" | "textarea";
 
+export interface SelectOption {
+  value: string;
+  label: string;
+}
+
 export interface FormField {
   tag: FormFieldTag;
   inputType?: string;
@@ -10,7 +15,15 @@ export interface FormField {
   placeholder?: string;
   required: boolean;
   label?: string;
-  options?: string[];
+  options?: SelectOption[];
+  multiple?: boolean;
+  maxlength?: number;
+  minlength?: number;
+  pattern?: string;
+  accept?: string;
+  min?: string;
+  max?: string;
+  step?: string;
 }
 
 export interface ExtractedForm {
@@ -18,6 +31,7 @@ export interface ExtractedForm {
   action?: string;
   method?: string;
   fields: FormField[];
+  submitText?: string;
 }
 
 export interface PageForms {
@@ -37,6 +51,7 @@ export interface FormVariant {
   fingerprint: string;
   fields: FormField[];
   method?: string;
+  submitText?: string;
   formIds: string[];
   occurrences: FormOccurrence[];
 }
@@ -60,42 +75,130 @@ export function extractFormsFromPage(
     // These submit to JS handlers, not server endpoints, and are not
     // user-fillable "true" forms we want to migrate.
     if ($form.attr("data-search") === "1") return;
+
     const fields: FormField[] = [];
+    const groupByName = new Map<string, number>();
+    let submitText: string | undefined;
 
-    $form.find("input, select, textarea").each((_, fieldEl) => {
-      const $field = $(fieldEl);
-      const rawTag = ($field.prop("tagName") ?? "").toString().toLowerCase();
-      if (rawTag !== "input" && rawTag !== "select" && rawTag !== "textarea") {
-        return;
-      }
-      const tag = rawTag as FormFieldTag;
+    $form
+      .find("input, select, textarea, button")
+      .each((_, fieldEl) => {
+        const $field = $(fieldEl);
+        const tagName = ($field.prop("tagName") ?? "")
+          .toString()
+          .toLowerCase();
 
-      const field: FormField = {
-        tag,
-        inputType: tag === "input" ? $field.attr("type") : undefined,
-        name: $field.attr("name"),
-        placeholder: $field.attr("placeholder"),
-        required: $field.attr("required") !== undefined,
-        label: findLabelFor($form, $field),
-      };
+        if (tagName === "button") {
+          const btnType = $field.attr("type");
+          if (!btnType || btnType === "submit") {
+            const text = cleanLabel($field.text());
+            if (text) submitText = text;
+          }
+          return;
+        }
 
-      if (tag === "select") {
-        const options: string[] = [];
-        $field.find("option").each((_, opt) => {
-          const text = $(opt).text().trim();
-          if (text) options.push(text);
-        });
-        field.options = options;
-      }
+        if (tagName === "input") {
+          const inputType = ($field.attr("type") ?? "text").toLowerCase();
 
-      fields.push(field);
-    });
+          // Hidden + Scorpion control fields don't migrate to CF7.
+          if (inputType === "hidden") return;
+
+          if (inputType === "submit" || inputType === "button") {
+            const text = $field.attr("value");
+            if (text) submitText = text;
+            return;
+          }
+
+          if (inputType === "radio" || inputType === "checkbox") {
+            const name = $field.attr("name");
+            const option: SelectOption = {
+              value: $field.attr("value") ?? "",
+              label: findLabelFor($form, $field) ?? "",
+            };
+            const required = $field.attr("required") !== undefined;
+
+            if (name && groupByName.has(name)) {
+              const idx = groupByName.get(name)!;
+              const existing = fields[idx];
+              existing.options = existing.options ?? [];
+              existing.options.push(option);
+              if (required) existing.required = true;
+              return;
+            }
+
+            const field: FormField = {
+              tag: "input",
+              inputType,
+              name,
+              required,
+              options: [option],
+            };
+            fields.push(field);
+            if (name) groupByName.set(name, fields.length - 1);
+            return;
+          }
+
+          // Single input field — text, email, tel, number, date, file, etc.
+          const field: FormField = {
+            tag: "input",
+            inputType,
+            name: $field.attr("name"),
+            placeholder: $field.attr("placeholder"),
+            required: $field.attr("required") !== undefined,
+            label: findLabelFor($form, $field),
+          };
+          assignStringAttr(field, "pattern", $field.attr("pattern"));
+          assignStringAttr(field, "accept", $field.attr("accept"));
+          assignStringAttr(field, "min", $field.attr("min"));
+          assignStringAttr(field, "max", $field.attr("max"));
+          assignStringAttr(field, "step", $field.attr("step"));
+          assignNumberAttr(field, "maxlength", $field.attr("maxlength"));
+          assignNumberAttr(field, "minlength", $field.attr("minlength"));
+          fields.push(field);
+          return;
+        }
+
+        if (tagName === "select") {
+          const options: SelectOption[] = [];
+          $field.find("option").each((_, opt) => {
+            const $opt = $(opt);
+            const label = $opt.text().trim();
+            if (!label) return;
+            const value = $opt.attr("value") ?? label;
+            options.push({ value, label });
+          });
+          const field: FormField = {
+            tag: "select",
+            name: $field.attr("name"),
+            required: $field.attr("required") !== undefined,
+            label: findLabelFor($form, $field),
+            options,
+            multiple: $field.attr("multiple") !== undefined,
+          };
+          fields.push(field);
+          return;
+        }
+
+        if (tagName === "textarea") {
+          const field: FormField = {
+            tag: "textarea",
+            name: $field.attr("name"),
+            placeholder: $field.attr("placeholder"),
+            required: $field.attr("required") !== undefined,
+            label: findLabelFor($form, $field),
+          };
+          assignNumberAttr(field, "maxlength", $field.attr("maxlength"));
+          assignNumberAttr(field, "minlength", $field.attr("minlength"));
+          fields.push(field);
+        }
+      });
 
     forms.push({
       id: $form.attr("id"),
       action: $form.attr("action"),
       method: $form.attr("method"),
       fields,
+      submitText,
     });
   });
 
@@ -129,6 +232,7 @@ export function analyzeForms(crawl: CrawlResult): FormAnalysis {
           fingerprint,
           fields: form.fields,
           method: form.method,
+          submitText: form.submitText,
           formIds: [],
           occurrences: [],
         };
@@ -167,6 +271,14 @@ function fingerprintForm(form: ExtractedForm): string {
     required: f.required,
     label: f.label,
     options: f.options,
+    multiple: f.multiple,
+    maxlength: f.maxlength,
+    minlength: f.minlength,
+    pattern: f.pattern,
+    accept: f.accept,
+    min: f.min,
+    max: f.max,
+    step: f.step,
   }));
   return JSON.stringify({ method: form.method, fields });
 }
@@ -191,4 +303,22 @@ function cleanLabel(raw: string): string {
 
 function cssEscape(value: string): string {
   return value.replace(/(["\\])/g, "\\$1");
+}
+
+function assignStringAttr(
+  field: FormField,
+  key: "pattern" | "accept" | "min" | "max" | "step",
+  value: string | undefined,
+): void {
+  if (value !== undefined && value !== "") field[key] = value;
+}
+
+function assignNumberAttr(
+  field: FormField,
+  key: "maxlength" | "minlength",
+  value: string | undefined,
+): void {
+  if (value === undefined) return;
+  const n = Number.parseInt(value, 10);
+  if (Number.isFinite(n) && n > 0) field[key] = n;
 }

@@ -42,23 +42,64 @@ End-to-end conversion runs through a single `POST /api/jobs` call: ingest → cr
 
 ## 2. How to run
 
-Three terminals — Docker (Postgres + Redis), backend on `:3001`, frontend on `:3000`.
+### Prerequisites
+- Docker Desktop running (WSL2 backend on Windows).
+- That's it — Node, Postgres, Redis, and Chromium all live inside containers. No host-side `npm install` needed for the default flow.
+
+### Start everything
 
 ```
-# Once per machine (Docker Desktop must be running)
+docker compose up -d --build
+```
+
+- First run builds the backend + frontend dev images (~2 min — the backend pulls `ghcr.io/puppeteer/puppeteer:23`, which is ~1.2 GB but cached after that).
+- Subsequent `up -d` reuses the cached images and starts in <10 s.
+- WordPress + MariaDB also come up by default (existing behavior) — only used when you run `wp:import`.
+
+Once it's up:
+
+| Service | URL |
+|---|---|
+| Frontend | http://localhost:3000 |
+| Backend  | http://localhost:3001 (`/health` returns `{"status":"ok"}`) |
+| WordPress | http://localhost:8080 (used by `wp:import`) |
+
+### What's bind-mounted vs containerized
+
+- **Source** — `./backend` and `./frontend` are bind-mounted, so saving a file triggers `tsx watch` (backend) and Next dev HMR (frontend) inside the container. No restart needed for code edits.
+- **`node_modules`** — kept in named volumes (`backend_node_modules`, `frontend_node_modules`) so the container deps aren't overwritten by your host install. **If you change `package.json` or `package-lock.json`, rebuild:** `docker compose up -d --build backend` (or `frontend`).
+- **Conversion output** — bind-mounted at `<repo>/.conversions/<jobId>/` so the host-side `npm run wp:import` script can read the generated zips. `.conversions/` is gitignored.
+
+### Day-to-day commands
+
+```
+docker compose logs -f backend         # tail backend logs
+docker compose logs -f frontend        # tail frontend logs
+docker compose restart backend         # bounce a single service
+docker compose exec backend sh         # shell into the backend container
+docker compose exec backend npm run db:migrate   # run a npm script inside the container
+docker compose down                    # stop everything (volumes persist)
+docker compose down -v                 # nuke local DB + node_modules volumes
+```
+
+### Troubleshooting
+
+- **Backend hot-reload not firing on Windows** — file events over WSL2 bind mounts need polling. `CHOKIDAR_USEPOLLING=true` / `WATCHPACK_POLLING=true` are already set in `docker-compose.yml`; if you ever see stale code, `docker compose restart backend` and re-save.
+- **`Failed to launch the browser process … Running as root without --no-sandbox`** — the puppeteer image runs as root in dev, so `puppeteer.launch()` passes `--no-sandbox` (see `backend/src/pipeline/crawl/index.ts`). If you remove that flag, the crawler will break inside the container.
+- **`outputPath` from the DB points at `/tmp/scorpion-conversions/…`** — that's the container's filesystem view. `wp:import` translates it to `<repo>/.conversions/…` automatically via `toHostPath()` in `import-to-wp.ts`. If you call the path from elsewhere, do the same translation.
+
+### Run on the host instead (optional)
+
+If you'd rather run the backend/frontend on the host (debugger attach, faster file watching, native Chromium), stop just those two containers and keep the data plane up:
+
+```
+docker compose stop backend frontend
 cp backend/.env.example backend/.env   # one-time; matches docker-compose defaults
-docker compose up -d                   # Postgres + Redis (app data plane)
-# → containers `scorpion-wp-converter-postgres` and `…-redis`
-
-# Terminal 1 — backend
-cd backend && npm run dev
-# → "Backend listening on http://localhost:3001"
-#   On boot, the backend runs `drizzle/` migrations against $DATABASE_URL.
-
-# Terminal 2 — frontend
-cd frontend && npm run dev
-# → "✓ Ready in <n>ms" — open http://localhost:3000
+cd backend && npm install && npm run dev    # terminal 1 — http://localhost:3001
+cd frontend && npm install && npm run dev   # terminal 2 — http://localhost:3000
 ```
+
+When running on the host, `outputPath` in the DB will be your real OS temp dir (e.g. `C:\Users\<you>\AppData\Local\Temp\scorpion-conversions\…` on Windows), and `wp:import`'s path translator passes it through unchanged.
 
 ### Database / queue commands
 ```
@@ -98,7 +139,7 @@ WordPress is now reachable at **http://localhost:8080/** — on first visit it s
 
 | # | Step | wp-cli invocation |
 |---|---|---|
-| 1 | Locate the job's `output/` dir on the host (sibling of `export.zip` in `os.tmpdir()/scorpion-conversions/<jobId>/`) | — |
+| 1 | Locate the job's `output/` dir on the host. `toHostPath()` rewrites container `/tmp/scorpion-conversions/<jobId>/` → `<repo>/.conversions/<jobId>/` (containerized backend) and passes host paths (`os.tmpdir()/scorpion-conversions/<jobId>/`) through unchanged. | — |
 | 2 | Bring up `wpdb` + `wordpress` if not already running | `docker compose up -d wpdb wordpress` |
 | 3 | Wait for WP HTTP on :8080 | `fetch /wp-includes/version.php` |
 | 4 | Install WordPress on first run (admin / admin / admin@example.test, postname permalinks) | `wp core install` + `wp rewrite structure /%postname%/ --hard` |
@@ -130,6 +171,14 @@ docker compose down -v                          # nuke volumes too (next `wp:imp
 ```
 
 ### CLI alternative — runs the full pipeline including the build
+
+Inside the backend container (default dev setup):
+```
+docker compose exec backend npx tsx src/scripts/run-extract.ts https://www.tennesseeplumbinginc.com/
+docker compose exec backend npx tsx src/scripts/run-extract.ts https://www.tennesseeplumbinginc.com/ --download
+```
+
+Or on the host (requires `npm install` in `backend/` first):
 ```
 cd backend
 npx tsx src/scripts/run-extract.ts https://www.tennesseeplumbinginc.com/            # pipeline + analysis prints

@@ -7,6 +7,7 @@ import {
   type DownloadOutcome,
 } from "../download";
 import type { IngestResult } from "../ingest";
+import type { SiteRedirect } from "../ingest";
 import type {
   AssetInventory,
   FormAnalysis,
@@ -14,10 +15,11 @@ import type {
   NavAnalysis,
   PageContentZones,
 } from "../parse";
+import { buildCf7Forms, type Cf7Form } from "./cf7-forms";
 import { buildMigrationChecklist } from "./checklist";
 import { buildPageHierarchy } from "./hierarchy";
 import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
-import { buildPageTemplates } from "./templates";
+import { buildPageTemplates, buildSinglePostTemplate } from "./templates";
 import {
   buildFunctionsPhp,
   buildIndexPhp,
@@ -152,12 +154,24 @@ export async function buildWpPackage(
   );
   const hierarchy = buildPageHierarchy(inputs.ingest.pages);
 
-  // Per-page inline <style> blocks are written to inline-<slug>.css so each
-  // page only loads its own inline tokens. Deduped against
-  // inputs.assets.inlineStyles by index — identical blocks across pages
-  // emit identical files (different filenames; that's fine).
-  const inlineFilenameByPath = new Map<string, string>();
+  // Many pages share a templateSlug now (one per unique Scorpion Template
+  // value). Pick the lowest-postId non-blog page in each group as the
+  // exemplar — its inline styles and asset deps become the template's.
+  const exemplarByTemplateSlug = new Map<string, typeof hierarchy.nodes[0]>();
   for (const node of hierarchy.nodes) {
+    if (node.isBlogPost) continue;
+    const existing = exemplarByTemplateSlug.get(node.templateSlug);
+    if (!existing || node.postId < existing.postId) {
+      exemplarByTemplateSlug.set(node.templateSlug, node);
+    }
+  }
+
+  // Per-template inline <style> blocks are written to inline-<slug>.css
+  // so each template only loads its exemplar's tokens. Pages in the same
+  // group inherit those (the alternative — generate per-page inline CSS —
+  // would defeat the consolidation goal).
+  const inlineFilenameBySlug = new Map<string, string>();
+  for (const [slug, node] of exemplarByTemplateSlug) {
     const path = node.page.path;
     const indices = inputs.assets.pageInlineStyleIndices.get(path) ?? [];
     if (indices.length === 0) continue;
@@ -168,48 +182,57 @@ export async function buildWpPackage(
       })
       .join("\n\n");
     const rewritten = rewriteCssUrls(inlineCss, inputs.siteUrl, urlMap);
-    const filename = `inline-${node.templateSlug}.css`;
+    const filename = `inline-${slug}.css`;
     await writeFile(join(cssDir, filename), rewritten);
-    inlineFilenameByPath.set(path, filename);
+    inlineFilenameBySlug.set(slug, filename);
   }
+
+  // CF7 layout + label/sizing overrides for the .ui-contact-form panel.
+  // Written once per build, enqueued on every page below so it always wins
+  // over the bundled Scorpion CSS.
+  const cf7OverridesFilename = "cf7-overrides.css";
+  await writeFile(
+    join(cssDir, cf7OverridesFilename),
+    buildCf7OverridesCss(),
+  );
 
   const cssFilenames: string[] = [];
   for (const r of cssOutcome.results) {
     if (r.status === "ok" && r.filename) cssFilenames.push(r.filename);
   }
-  // Per-page inline CSS files are part of the registered stylesheet handle
-  // set so the enqueue logic can reference them.
-  for (const filename of inlineFilenameByPath.values()) {
+  // Per-template inline CSS files are part of the registered stylesheet
+  // handle set so the enqueue logic can reference them.
+  for (const filename of inlineFilenameBySlug.values()) {
     cssFilenames.push(filename);
   }
+  cssFilenames.push(cf7OverridesFilename);
   const jsFilenames: string[] = [];
   for (const r of jsOutcome.results) {
     if (r.status === "ok" && r.filename) jsFilenames.push(r.filename);
   }
 
-  // Slug → ordered list of CSS / JS filenames that the original Scorpion
-  // page loaded, in document order. The per-page inline file is enqueued
-  // FIRST so the bundles cascade over it — this matches the original site
-  // where <style> blocks live in <head> and the main bundle is rendered
-  // into <body>, making the bundle authoritative for any selector both
-  // define. Reversing this order causes conflicts because inline blocks
-  // contain selectors like `:root` token overrides that the bundle also
-  // sets; if inline wins, the bundle's component styles fight the
-  // inline-applied tokens.
+  // Slug → ordered list of CSS / JS filenames the exemplar's Scorpion
+  // page loaded, in document order. Per-template inline file goes FIRST so
+  // the downloaded bundles cascade over it (matches the original site
+  // where <style> blocks live in <head> and the main bundle renders into
+  // <body>, making the bundle authoritative on any selector they both
+  // touch — reversing causes :root token fights).
   const cssFilenamesByTemplateSlug = new Map<string, string[]>();
   const jsFilenamesByTemplateSlug = new Map<string, string[]>();
-  for (const node of hierarchy.nodes) {
+  for (const [slug, node] of exemplarByTemplateSlug) {
     const path = node.page.path;
 
     const cssForPage: string[] = [];
-    const inlineFile = inlineFilenameByPath.get(path);
+    const inlineFile = inlineFilenameBySlug.get(slug);
     if (inlineFile) cssForPage.push(inlineFile);
     const cssUrls = inputs.assets.pageStylesheets.get(path) ?? [];
     for (const url of cssUrls) {
       const filename = cssFilenameByUrl.get(url);
       if (filename) cssForPage.push(filename);
     }
-    cssFilenamesByTemplateSlug.set(node.templateSlug, cssForPage);
+    // CF7 overrides go last so they win on equal-specificity selectors.
+    cssForPage.push(cf7OverridesFilename);
+    cssFilenamesByTemplateSlug.set(slug, cssForPage);
 
     const jsUrls = inputs.assets.pageScripts.get(path) ?? [];
     const jsForPage: string[] = [];
@@ -217,13 +240,33 @@ export async function buildWpPackage(
       const filename = jsFilenameByUrl.get(url);
       if (filename) jsForPage.push(filename);
     }
-    jsFilenamesByTemplateSlug.set(node.templateSlug, jsForPage);
+    jsFilenamesByTemplateSlug.set(slug, jsForPage);
   }
 
   await writeFile(
     join(themeDir, "style.css"),
     buildStyleCss(inputs.siteTitle),
   );
+  // Pick the dominant Scorpion template among blog posts — single.php
+  // uses that template's chrome + asset bundle. Falls back to null when
+  // the site has no blog posts.
+  const blogTemplateCounts = new Map<string, number>();
+  for (const node of hierarchy.nodes) {
+    if (!node.isBlogPost) continue;
+    blogTemplateCounts.set(
+      node.templateSlug,
+      (blogTemplateCounts.get(node.templateSlug) ?? 0) + 1,
+    );
+  }
+  let postTemplateSlug: string | null = null;
+  let bestCount = 0;
+  for (const [slug, count] of blogTemplateCounts) {
+    if (count > bestCount) {
+      bestCount = count;
+      postTemplateSlug = slug;
+    }
+  }
+
   await writeFile(
     join(themeDir, "functions.php"),
     buildFunctionsPhp({
@@ -234,20 +277,69 @@ export async function buildWpPackage(
         cssFilenamesByTemplateSlug,
         jsFilenamesByTemplateSlug,
       },
+      postTemplateSlug,
     }),
   );
+
+  // Emit a CSV the Redirection plugin can ingest via `wp redirection import`.
+  // We only write the file when there's something to import — wp:import
+  // looks for the file's existence as the install/import trigger so it
+  // doesn't bother installing the plugin on sites with no redirects.
+  if (inputs.ingest.redirects.length > 0) {
+    await writeFile(
+      join(outputDir, "redirects.csv"),
+      buildRedirectsCsv(inputs.ingest.redirects),
+    );
+  }
   await writeFile(join(themeDir, "index.php"), buildIndexPhp());
 
   const iconMap = inputs.ingest.iconMap;
+
+  // CF7 forms: allocate post_ids after pages + nav menu items so they
+  // don't collide. The dominant nav variant claims hierarchy.maxPostId + 1
+  // .. + items.length inside wxr.ts; CF7 posts start after that.
+  const dominantNav = inputs.navAnalysis?.variants[0];
+  const navItemCount = dominantNav?.items.length ?? 0;
+  const cf7BasePostId = hierarchy.maxPostId + navItemCount + 1;
+  const cf7Forms: Cf7Form[] = buildCf7Forms({
+    variants: inputs.formAnalysis.variants,
+    basePostId: cf7BasePostId,
+    siteTitle: inputs.siteTitle,
+  });
+  const formIdToCf7Lookup = new Map<string, { postId: number; title: string }>();
+  for (const cf7 of cf7Forms) {
+    const variant = inputs.formAnalysis.variants.find(
+      (v) => v.fingerprint === cf7.fingerprint,
+    );
+    if (!variant) continue;
+    for (const fid of variant.formIds) {
+      formIdToCf7Lookup.set(fid, { postId: cf7.postId, title: cf7.title });
+    }
+  }
+
   const { templates } = buildPageTemplates(
     inputs.contentZones,
     hierarchy,
     pageTitleByPath,
     urlMap,
     iconMap,
+    formIdToCf7Lookup,
   );
   for (const t of templates) {
     await writeFile(join(templatesDir, t.filename), t.content);
+  }
+
+  // single.php for post_type=post views. WP picks it up automatically by
+  // filename — uses the first blog post's HTML as the chrome exemplar.
+  const singleTemplate = buildSinglePostTemplate(
+    inputs.contentZones,
+    hierarchy,
+    urlMap,
+    iconMap,
+    formIdToCf7Lookup,
+  );
+  if (singleTemplate) {
+    await writeFile(join(themeDir, "single.php"), singleTemplate.content);
   }
 
   const wxr = buildWxrXml({
@@ -258,6 +350,7 @@ export async function buildWpPackage(
     urlMap,
     iconMap,
     navAnalysis: inputs.navAnalysis,
+    cf7Forms,
   });
   await writeFile(join(outputDir, "import.xml"), wxr);
 
@@ -275,6 +368,7 @@ export async function buildWpPackage(
       mediaCount: mediaOutcome.okCount,
       failedMedia: mediaOutcome.failedCount,
       formVariantCount: inputs.formAnalysis.variants.length,
+      redirectCount: inputs.ingest.redirects.length,
       knownLimitations: limitations,
     }),
   );
@@ -300,6 +394,87 @@ function outcomeStats(o: {
   totalBytes: number;
 }): BuildStats {
   return { ok: o.okCount, failed: o.failedCount, totalBytes: o.totalBytes };
+}
+
+// Layout + sizing + label-colour rules for the CF7 form that replaces the
+// Scorpion contact panel. Targets `.ui-contact-form` (we pass that class
+// via the [contact-form-7] shortcode's html_class attribute) so the rules
+// don't leak to other forms on the site. Uses `:has()` — supported in all
+// current Chrome / Edge / Safari / Firefox (Firefox stable late 2023).
+function buildCf7OverridesCss(): string {
+  return [
+    "/* CF7 layout overrides for the .ui-contact-form panel. */",
+    "",
+    ".ui-contact-form {",
+    "  display: flex;",
+    "  flex-wrap: wrap;",
+    "  gap: 0.5rem;",
+    "  padding: 0;",
+    "}",
+    "",
+    "/* CF7 wraps every tag in a <p> with default agent margins — kill them",
+    " * so flex layout owns the spacing. Default each row to full width;",
+    " * narrower fields opt in via the :has() rules below. */",
+    ".ui-contact-form > p {",
+    "  flex: 0 1 100%;",
+    "  margin: 0;",
+    "  box-sizing: border-box;",
+    "}",
+    "",
+    "/* Single-line inputs + selects — match the original panel proportions. */",
+    ".ui-contact-form input.wpcf7-form-control:not([type=\"checkbox\"]):not([type=\"radio\"]):not([type=\"submit\"]),",
+    ".ui-contact-form select.wpcf7-form-control {",
+    "  height: 2.5rem;",
+    "  padding: 0 0.75rem;",
+    "  box-sizing: border-box;",
+    "  width: 100%;",
+    "  background-color: #fff;",
+    "}",
+    "",
+    "/* Textareas — same look, height 80% of containing box. */",
+    ".ui-contact-form textarea.wpcf7-form-control {",
+    "  padding: 0.5rem 0.75rem;",
+    "  box-sizing: border-box;",
+    "  width: 100%;",
+    "  height: 80%;",
+    "  background-color: #fff;",
+    "}",
+    "",
+    "/* ≥ 700px: text-like single-line fields go half width so two share a row. */",
+    "@media (min-width: 700px) {",
+    "  .ui-contact-form > p:has(input.wpcf7-text),",
+    "  .ui-contact-form > p:has(input.wpcf7-tel),",
+    "  .ui-contact-form > p:has(input.wpcf7-email),",
+    "  .ui-contact-form > p:has(input.wpcf7-number),",
+    "  .ui-contact-form > p:has(input.wpcf7-url),",
+    "  .ui-contact-form > p:has(input.wpcf7-password) {",
+    "    flex: 0 1 calc(50% - 0.25rem);",
+    "  }",
+    "",
+    "  /* Address stays full-width even though it's typically a text input. */",
+    "  .ui-contact-form > p:has(.wpcf7-form-control-wrap[data-name*=\"address\"]) {",
+    "    flex: 0 1 100%;",
+    "  }",
+    "}",
+    "",
+    "/* Submit button — match the site's primary button colour, size to its label. */",
+    ".ui-contact-form input.wpcf7-submit {",
+    "  background: var(--buttons);",
+    "  width: fit-content;",
+    "  padding: 1rem;",
+    "}",
+    "",
+    "/* Label colour follows the section background contract:",
+    " *   .lt-bg panel  → black labels by default, white when nested in .ulk-bg",
+    " *   .dk-bg panel  → white labels by default, black when nested in .ulk-bg",
+    " * The 3-class rule (.ulk-bg in between) is more specific and overrides",
+    " * the 2-class default when present. */",
+    ".lt-bg .ui-contact-form label { color: #000; }",
+    ".dk-bg .ui-contact-form label { color: #fff; }",
+    ".lt-bg .ulk-bg .ui-contact-form label { color: #fff; }",
+    ".dk-bg .ulk-bg .ui-contact-form label { color: #000; }",
+    "",
+  ].join("\n");
 }
 
 function collectLimitations(
@@ -329,4 +504,19 @@ function collectLimitations(
     );
   }
   return out;
+}
+
+// Redirection plugin's CSV import expects `source,target,regex,code` with
+// a header row. regex=0 forces literal URL matching; code=301 is the
+// permanent-redirect default. Fields that contain a comma or quote are
+// double-quoted per RFC 4180; embedded quotes are doubled.
+function buildRedirectsCsv(redirects: SiteRedirect[]): string {
+  const escape = (v: string): string =>
+    /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+
+  const lines: string[] = ["source,target,regex,code"];
+  for (const { from, to } of redirects) {
+    lines.push(`${escape(from)},${escape(to)},0,301`);
+  }
+  return lines.join("\n") + "\n";
 }

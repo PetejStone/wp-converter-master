@@ -1,0 +1,18 @@
+# Dev image for the backend. Built on the official Puppeteer image so
+# Chromium + its system libraries are already present — no apt-get needed.
+FROM ghcr.io/puppeteer/puppeteer:23
+
+# Run as root in dev so bind-mounted source files written by the host user
+# (any uid) remain writable for tsx watch / npm.
+USER root
+WORKDIR /app
+
+# Install deps into the image. The compose file mounts an anonymous volume
+# at /app/node_modules so this layer survives the source bind mount.
+COPY package.json package-lock.json ./
+RUN npm install
+
+ENV NODE_ENV=development
+
+EXPOSE 3001
+CMD ["npm", "run", "dev"]

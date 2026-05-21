@@ -22,7 +22,18 @@ export async function crawlSite(
     };
   }
 
-  const browser = await puppeteer.launch({ headless: true });
+  // `--no-sandbox` is required when running as root inside the dev
+  // Docker container (the puppeteer base image runs as root). It's a no-op
+  // on host runs where the OS user already isn't root. The other flags
+  // shrink Chromium's footprint inside the container.
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
+  });
   try {
     const indexed = ingest.pages.map((page, index) => ({ page, index }));
     const results: CrawledPage[] = new Array(ingest.pages.length);

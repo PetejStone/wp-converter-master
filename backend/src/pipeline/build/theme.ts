@@ -17,6 +17,10 @@ export interface ThemeInputs {
   cssFilenames: string[];
   jsFilenames: string[];
   perPage: PerPageAssets;
+  // Template slug used for `post_type=post` views via single.php. Picked
+  // from the dominant Scorpion template among blog posts. If null the
+  // post enqueue branch is a no-op (no blog posts on this site).
+  postTemplateSlug: string | null;
 }
 
 export function buildStyleCss(siteTitle: string): string {
@@ -59,6 +63,10 @@ export function buildFunctionsPhp(inputs: ThemeInputs): string {
     jsHandleByFilename,
   );
 
+  const postSlugPhp = inputs.postTemplateSlug
+    ? `'${escapePhp(inputs.postTemplateSlug)}'`
+    : "null";
+
   return `<?php
 /**
  * Scorpion Converted child theme — generated.
@@ -80,6 +88,12 @@ function scorpion_converted_page_assets_map() {
 }
 
 function scorpion_converted_current_template_slug() {
+    if (is_singular('post')) {
+        // Blog posts use the chrome of whichever Scorpion template was
+        // most common among the site's blog posts at conversion time.
+        // null when the site has no blog posts.
+        return ${postSlugPhp};
+    }
     if (!is_page()) {
         return null;
     }
@@ -222,7 +236,7 @@ function scorpion_converted_render_zones_metabox($post) {
         return;
     }
 
-    echo '<p style="margin:0 0 1em;color:#555;">Each block below is a content region extracted from the original Scorpion page, rendered at its DOM position via <code>[scorpion_zone id="…"]</code>. Edit the raw HTML to update the live page. To restore the original markup, check <strong>Revert to original</strong> and click <strong>Update</strong>.</p>';
+    echo '<p style="margin:0 0 1em;color:#555;">Each block below is a content region from the original Scorpion page, rendered at its DOM position via <code>[scorpion_zone id="…"]</code>. Edit visually — switch to the <strong>Text</strong> tab if you need to touch raw HTML. To restore the original markup, check <strong>Revert to original</strong> and click <strong>Update</strong>.</p>';
 
     foreach ($zone_keys as $key) {
         $zone_id = substr($key, strlen('_scorpion_zone_'));
@@ -233,11 +247,28 @@ function scorpion_converted_render_zones_metabox($post) {
         $has_original = metadata_exists('post', $post->ID, $key . '__original');
         $field_name = 'scorpion_zone_' . $zone_id;
         $revert_name = 'scorpion_zone_revert_' . $zone_id;
+        $editor_id = 'scorpion_zone_editor_' . preg_replace('/[^a-z0-9]/i', '_', $zone_id);
 
-        echo '<details style="margin:0 0 0.75em;border:1px solid #ddd;border-radius:4px;">';
+        echo '<details style="margin:0 0 0.75em;border:1px solid #ddd;border-radius:4px;" open>';
         echo '<summary style="padding:0.5em 0.75em;background:#f6f7f7;cursor:pointer;font-family:monospace;font-size:13px;">' . esc_html($zone_id) . '</summary>';
         echo '<div style="padding:0.75em;">';
-        echo '<textarea name="' . esc_attr($field_name) . '" rows="10" style="width:100%;font-family:monospace;font-size:12px;line-height:1.4;">' . esc_textarea($current) . '</textarea>';
+        // wp_editor() renders TinyMCE (visual + text tab). The textarea_name
+        // tells WP what $_POST key our save handler should read on submit;
+        // the editor_id has to be unique per metabox instance.
+        // tinymce.wpautop is left at WP's defaults — the Visual tab will
+        // pretty-print the HTML, but switching to the Text tab and saving
+        // preserves whatever raw HTML you type there verbatim.
+        wp_editor(
+            $current,
+            $editor_id,
+            array(
+                'textarea_name' => $field_name,
+                'media_buttons' => true,
+                'tinymce'       => array('wpautop' => false),
+                'quicktags'     => true,
+                'editor_height' => 240,
+            )
+        );
         if ($has_original) {
             echo '<label style="display:block;margin-top:0.5em;font-size:13px;">';
             echo '<input type="checkbox" name="' . esc_attr($revert_name) . '" value="1" /> ';

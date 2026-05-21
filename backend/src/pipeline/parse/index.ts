@@ -15,6 +15,7 @@ export {
 export type {
   FormField,
   FormFieldTag,
+  SelectOption,
   ExtractedForm,
   PageForms,
   FormOccurrence,

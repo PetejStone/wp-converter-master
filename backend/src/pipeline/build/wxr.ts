@@ -1,4 +1,5 @@
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
+import type { Cf7Form } from "./cf7-forms";
 import type { PageHierarchy, PageNode } from "./hierarchy";
 import { stripBlockedDomainContent } from "./strip-blocked-domains";
 import { substituteSvgIcons } from "./svg-icons";
@@ -13,6 +14,7 @@ export interface WxrInputs {
   urlMap: Map<string, string>;
   iconMap: Map<string, string>;
   navAnalysis?: NavAnalysis;
+  cf7Forms?: Cf7Form[];
 }
 
 const PRIMARY_MENU_TERM_ID = 1;
@@ -35,7 +37,9 @@ export function buildWxrXml(inputs: WxrInputs): string {
     ? buildNavMenuItems(dominantNav, inputs.hierarchy.maxPostId)
     : [];
 
-  const itemsBlock = [...pageItems, ...navItems].join("\n");
+  const cf7Items = (inputs.cf7Forms ?? []).map(buildCf7Item);
+
+  const itemsBlock = [...pageItems, ...navItems, ...cf7Items].join("\n");
   const termBlock = navTerm ? `${navTerm}\n` : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -114,18 +118,48 @@ function buildPageItem(
     postmeta("_yoast_wpseo_canonical", page.canonical),
   ].filter((s) => s.length > 0);
 
-  // Also emit `_wp_page_template` as explicit postmeta — the standalone
-  // <wp:page_template> element is read by some WP importers and ignored by
-  // others (it's silently dropped by the popular wordpress-importer plugin
-  // in 2026). Postmeta is the reliable path.
-  const templateMeta = postmeta(
-    "_wp_page_template",
-    `templates/page-${templateSlug}.php`,
-  );
+  // _wp_page_template only applies to post_type=page — blog posts use the
+  // theme's single.php fallback, not a named page template.
+  const templateMeta = node.isBlogPost
+    ? ""
+    : postmeta(
+        "_wp_page_template",
+        `templates/page-${templateSlug}.php`,
+      );
 
   const meta = [...zoneMeta, templateMeta, ...yoastMeta]
     .filter((s) => s.length > 0)
     .join("\n");
+
+  const postType = node.isBlogPost ? "post" : "page";
+  // post_type=post in WP is the blog post type. Blog posts are flattened
+  // (parent = 0) — WP's date-based archive URLs handle the original
+  // /our-blog/YYYY/<month>/<slug>/ permalink structure via rewrite rules
+  // set up by the importer (postname permalinks include the date prefix
+  // for posts by default).
+  const postParent = node.isBlogPost ? 0 : node.parentPostId;
+  const pageTemplateLine = node.isBlogPost
+    ? ""
+    : `\n      <wp:page_template><![CDATA[templates/page-${templateSlug}.php]]></wp:page_template>`;
+
+  // Blog posts: emit the captured `<article class="cnt-stl">` inner HTML
+  // as post_content so single.php's the_content() call renders it. Use a
+  // `wp:freeform` (Classic block) wrapper rather than `wp:html` — the
+  // Classic block surfaces in the Gutenberg editor as an inline TinyMCE
+  // instance with the **Visual** tab as default. That gives the editor
+  // proper rich-text editing of the body without showing raw HTML, while
+  // still preserving the original markup byte-for-byte through save.
+  // (Note: `wp:html` would also preserve markup but renders the post body
+  // as a raw-HTML block in admin, which isn't what we want here.)
+  let bodyHtml = "";
+  if (node.isBlogPost && zones?.bodyHtml) {
+    bodyHtml = rewriteHtmlUrls(zones.bodyHtml, pageUrl, inputs.urlMap);
+    bodyHtml = substituteSvgIcons(bodyHtml, inputs.iconMap);
+    bodyHtml = stripBlockedDomainContent(bodyHtml);
+  }
+  const contentEncoded = bodyHtml
+    ? cdata(`<!-- wp:freeform -->\n${bodyHtml}\n<!-- /wp:freeform -->`)
+    : "<![CDATA[]]>";
 
   return `    <item>
       <title>${xmlText(page.title || node.postName)}</title>
@@ -134,7 +168,7 @@ function buildPageItem(
       <dc:creator><![CDATA[admin]]></dc:creator>
       <guid isPermaLink="false">${xmlText(page.canonical)}</guid>
       <description></description>
-      <content:encoded><![CDATA[]]></content:encoded>
+      <content:encoded>${contentEncoded}</content:encoded>
       <excerpt:encoded><![CDATA[]]></excerpt:encoded>
       <wp:post_id>${node.postId}</wp:post_id>
       <wp:post_date><![CDATA[${sqlDate}]]></wp:post_date>
@@ -143,12 +177,11 @@ function buildPageItem(
       <wp:ping_status><![CDATA[closed]]></wp:ping_status>
       <wp:post_name><![CDATA[${node.postName}]]></wp:post_name>
       <wp:status><![CDATA[publish]]></wp:status>
-      <wp:post_parent>${node.parentPostId}</wp:post_parent>
+      <wp:post_parent>${postParent}</wp:post_parent>
       <wp:menu_order>0</wp:menu_order>
-      <wp:post_type><![CDATA[page]]></wp:post_type>
+      <wp:post_type><![CDATA[${postType}]]></wp:post_type>
       <wp:post_password><![CDATA[]]></wp:post_password>
-      <wp:is_sticky>0</wp:is_sticky>
-      <wp:page_template><![CDATA[templates/page-${templateSlug}.php]]></wp:page_template>
+      <wp:is_sticky>0</wp:is_sticky>${pageTemplateLine}
 ${meta}
     </item>`;
 }
@@ -263,6 +296,42 @@ function buildNavMenuItem(args: {
       <wp:post_password><![CDATA[]]></wp:post_password>
       <wp:is_sticky>0</wp:is_sticky>
       <category domain="nav_menu" nicename="${PRIMARY_MENU_SLUG}"><![CDATA[${PRIMARY_MENU_NAME}]]></category>
+${meta}
+    </item>`;
+}
+
+function buildCf7Item(form: Cf7Form): string {
+  const itemDate = new Date(Date.now() - form.postId * 1000);
+  const sqlDate = formatMysqlDate(itemDate);
+  const pubDate = itemDate.toUTCString();
+
+  const meta = [
+    postmetaRaw("_form", form.formTagMarkup),
+    postmetaRaw("_mail", form.mailSerialized),
+    postmetaRaw("_locale", "en_US"),
+  ].join("\n");
+
+  return `    <item>
+      <title>${xmlText(form.title)}</title>
+      <link></link>
+      <pubDate>${pubDate}</pubDate>
+      <dc:creator><![CDATA[admin]]></dc:creator>
+      <guid isPermaLink="false">wpcf7-${form.postId}</guid>
+      <description></description>
+      <content:encoded><![CDATA[]]></content:encoded>
+      <excerpt:encoded><![CDATA[]]></excerpt:encoded>
+      <wp:post_id>${form.postId}</wp:post_id>
+      <wp:post_date><![CDATA[${sqlDate}]]></wp:post_date>
+      <wp:post_date_gmt><![CDATA[${sqlDate}]]></wp:post_date_gmt>
+      <wp:comment_status><![CDATA[closed]]></wp:comment_status>
+      <wp:ping_status><![CDATA[closed]]></wp:ping_status>
+      <wp:post_name><![CDATA[${form.slug}]]></wp:post_name>
+      <wp:status><![CDATA[publish]]></wp:status>
+      <wp:post_parent>0</wp:post_parent>
+      <wp:menu_order>0</wp:menu_order>
+      <wp:post_type><![CDATA[wpcf7_contact_form]]></wp:post_type>
+      <wp:post_password><![CDATA[]]></wp:post_password>
+      <wp:is_sticky>0</wp:is_sticky>
 ${meta}
     </item>`;
 }

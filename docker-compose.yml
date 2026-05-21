@@ -88,8 +88,61 @@ services:
     profiles:
       - tools
 
+  # ---- App services. Run `docker compose up -d` to start everything.
+  # ---- Source is bind-mounted for hot reload; node_modules is preserved
+  # ---- in a named volume so the host's lock isn't fought over.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: scorpion-wp-converter-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "3001"
+      DATABASE_URL: postgres://scorpion:scorpion@postgres:5432/scorpion_wp_converter
+      REDIS_URL: redis://redis:6379
+      TEMP_DIR: /tmp/scorpion-conversions
+      # tsx/chokidar over a bind mount on Windows needs polling.
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend:/app
+      - backend_node_modules:/app/node_modules
+      # Conversion output is bind-mounted to the host's ./.conversions/
+      # so `npm run wp:import` (run on the host) can still see the zips.
+      - ./.conversions:/tmp/scorpion-conversions
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: scorpion-wp-converter-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # SSR-time proxy target inside the compose network.
+      BACKEND_URL: http://backend:3001
+      # Browser-time WS endpoint — must be reachable from the host.
+      NEXT_PUBLIC_BACKEND_WS_URL: ws://localhost:3001
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+
 volumes:
   scorpion_pg_data:
   scorpion_redis_data:
   scorpion_wp_data:
   scorpion_wp_db_data:
+  backend_node_modules:
+  frontend_node_modules:

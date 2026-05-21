@@ -55,7 +55,9 @@
       "Bash(curl -s -I \"https://www.tennesseeplumbinginc.com/cms/includes/d4a6bwv99fk.2504230559300.css\" -H \"User-Agent: ScorpionWPConverter/0.1 \\(+https://scorpion.co; conversion-tool\\)\")",
       "Bash(curl -s -I \"https://www.tennesseeplumbinginc.com/cms/includes/l2jbc5m92dn.2504230559300.css\" -H \"User-Agent: ScorpionWPConverter/0.1 \\(+https://scorpion.co; conversion-tool\\)\")",
       "Read(//c/Users/Jesse.Solis/AppData/Local/Temp/scorpion-conversions/4128b459-f69c-4ec5-be4e-f9972bb64725/output/theme/scorpion-converted/js/**)",
-      "Read(//c/Users/Jesse.Solis/AppData/Local/Temp/scorpion-conversions/4128b459-f69c-4ec5-be4e-f9972bb64725/output/theme/scorpion-converted/js//**)"
+      "Read(//c/Users/Jesse.Solis/AppData/Local/Temp/scorpion-conversions/4128b459-f69c-4ec5-be4e-f9972bb64725/output/theme/scorpion-converted/js//**)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

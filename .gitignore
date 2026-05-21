@@ -18,3 +18,5 @@ Thumbs.db
 
 # Local conversion job temp output
 /tmp/scorpion-conversions/
+# Bind-mounted output dir when backend runs in the dev container
+/.conversions/

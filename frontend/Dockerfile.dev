@@ -1,0 +1,14 @@
+# Dev image for the Next.js frontend.
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install deps into the image. The compose file mounts an anonymous volume
+# at /app/node_modules so this layer survives the source bind mount.
+COPY package.json package-lock.json ./
+RUN npm install
+
+ENV NODE_ENV=development
+
+EXPOSE 3000
+CMD ["npm", "run", "dev"]

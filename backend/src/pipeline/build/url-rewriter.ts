@@ -5,10 +5,11 @@ export function rewriteHtmlUrls(
   pageUrl: string,
   urlMap: Map<string, string>,
 ): string {
-  if (urlMap.size === 0) return html;
   // isDocument=false so fragments (content-zone inner HTML) don't get
   // auto-wrapped in <html><head></head><body>. Full documents are still
   // preserved because their existing wrapper tags are kept as-is.
+  // (Note: we used to early-return when urlMap was empty, but the
+  // blog-date-prefix collapse below runs unconditionally too.)
   const $ = cheerio.load(html, null, false);
 
   $("img, source, audio, video, iframe, embed, script").each((_, el) => {
@@ -22,6 +23,12 @@ export function rewriteHtmlUrls(
   });
   $("a, link").each((_, el) => {
     rewriteAttr($(el), "href", pageUrl, urlMap);
+    // Collapse Scorpion blog-post URLs to WP's /%postname%/ permalink.
+    // Scorpion serves articles at /<blog-root>/YYYY/<monthname>/<slug>/
+    // but the wordpress-importer + our rewrite structure put them at
+    // /<slug>/, so any internal href to the dated path 404s. Strip the
+    // date prefix at build time so the link resolves directly.
+    collapseBlogPermalink($(el), "href");
   });
   $("object[data]").each((_, el) => {
     rewriteAttr($(el), "data", pageUrl, urlMap);
@@ -101,6 +108,30 @@ function rewriteAttr(
   if (abs && urlMap.has(abs)) {
     $el.attr(attr, urlMap.get(abs)!);
   }
+}
+
+// Matches Scorpion's dated blog-post URL shape (root-relative or
+// absolute): `/(our-blog|blog|news)/YYYY/<monthname>/<slug>/`. The slug
+// segment is captured. Optional trailing slash; optional ?query / #hash
+// follow on the original URL and are preserved by `collapseBlogPermalink`.
+// Blog *index* / category paths like `/our-blog/` or `/our-blog/categories/`
+// don't match — they lack the year + month segments.
+const BLOG_DATED_PATH_RE =
+  /^(?:https?:\/\/[^/]+)?\/(?:our-blog|blog|news)\/\d{4}\/[a-z]+\/([a-z0-9_-]+)\/?(?:[?#].*)?$/i;
+
+function collapseBlogPermalink(
+  $el: cheerio.Cheerio<any>,
+  attr: string,
+): void {
+  const val = $el.attr(attr);
+  if (!val) return;
+  const m = BLOG_DATED_PATH_RE.exec(val);
+  if (!m) return;
+  const slug = m[1];
+  // Preserve query / hash if present.
+  const tailIdx = val.search(/[?#]/);
+  const tail = tailIdx >= 0 ? val.slice(tailIdx) : "";
+  $el.attr(attr, `/${slug}/${tail}`);
 }
 
 function resolveAbsolute(href: string, baseUrl: string): string | null {
