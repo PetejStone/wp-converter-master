@@ -241,6 +241,51 @@ async function main() {
   wpCli(["plugin", "install", "contact-form-7", "--force"]);
   wpCli(["plugin", "activate", "contact-form-7"]);
 
+  // ---- 6b.1. Install + activate Flamingo + WP Mail SMTP ----
+  // Flamingo: persists every CF7 submission to wp-admin → Flamingo →
+  // Inbound Messages. Lets us verify submissions independent of mail.
+  // WP Mail SMTP: routes wp_mail() through SMTP (configured below to
+  // point at the local Mailpit container) so we can verify the admin
+  // notification + user auto-responder without a real mail provider.
+  console.log("\nInstalling flamingo plugin (CF7 submission log)…");
+  wpCli(["plugin", "install", "flamingo", "--force"]);
+  wpCli(["plugin", "activate", "flamingo"]);
+  console.log("\nInstalling wp-mail-smtp plugin…");
+  wpCli(["plugin", "install", "wp-mail-smtp", "--force"]);
+  wpCli(["plugin", "activate", "wp-mail-smtp"]);
+
+  // Point WP Mail SMTP at Mailpit. Mailpit's SMTP listener is on host
+  // `mailpit` port 1025 on the docker network (no auth, no TLS — it's a
+  // dev catcher). Stored in the wp_mail_smtp option as the plugin's
+  // settings array.
+  console.log("Configuring WP Mail SMTP to route through Mailpit…");
+  const wpMailSmtpJson = JSON.stringify({
+    mail: {
+      from_email: "noreply@scorpion.test",
+      from_name: "Scorpion Test",
+      from_email_force: false,
+      from_name_force: false,
+      mailer: "smtp",
+      return_path: false,
+    },
+    smtp: {
+      autotls: false,
+      auth: false,
+      host: "mailpit",
+      port: 1025,
+      encryption: "none",
+      user: "",
+      pass: "",
+    },
+  });
+  wpCli([
+    "option",
+    "update",
+    "wp_mail_smtp",
+    wpMailSmtpJson,
+    "--format=json",
+  ]);
+
   // ---- 6c. Install + activate Redirection (only when there's a CSV) ----
   // Redirection owns the 301 rules ingested from Scorpion's
   // #SiteRedirectTable. The build emits redirects.csv only when the table

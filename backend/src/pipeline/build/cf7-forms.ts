@@ -11,6 +11,10 @@ export interface Cf7Form {
   fingerprint: string;
   formTagMarkup: string;
   mailSerialized: string;
+  // Auto-responder ("Mail (2)") — sends a thank-you back to the submitter.
+  // Only emitted when the form has an email field we can address; null
+  // otherwise (CF7 treats a missing _mail_2 as inactive).
+  mail2Serialized: string | null;
   localeSerialized: string;
 }
 
@@ -41,6 +45,19 @@ export function buildCf7Forms(args: BuildCf7Args): Cf7Form[] {
       subject: `${args.siteTitle ?? "Site"} form submission`,
       fields: named,
     });
+    // If the form has an email field we can address, ship an active
+    // auto-responder that thanks the submitter and echoes their inputs.
+    // Otherwise leave Mail (2) inactive — better than emailing a literal
+    // "[your-email]" string to nowhere.
+    const emailField = named.find((nf) => nf.field.inputType === "email");
+    const mail2Serialized = emailField
+      ? buildMail2Serialized({
+          submitterField: emailField.cf7Name,
+          sender: fromSender,
+          siteTitle: args.siteTitle ?? "Site",
+          fields: named,
+        })
+      : null;
 
     return {
       postId,
@@ -49,6 +66,7 @@ export function buildCf7Forms(args: BuildCf7Args): Cf7Form[] {
       fingerprint: variant.fingerprint,
       formTagMarkup,
       mailSerialized,
+      mail2Serialized,
       localeSerialized: phpSerialize("en_US"),
     };
   });
@@ -162,6 +180,10 @@ function buildFieldTag(nf: NamedField): string | null {
       return `[date${required} ${cf7Name}${placeholderModifier(field)}]`;
     }
 
+    // Patterns + tel placeholder are injected at render time by a
+    // wpcf7_form_elements filter in functions.php (CF7's form-tag option
+    // parser chokes on regex special chars, so we add the pattern attr
+    // post-render). Kept simple here.
     if (
       type === "email" ||
       type === "tel" ||
@@ -233,6 +255,44 @@ function buildMailSerialized(args: {
     recipient: args.recipient,
     body,
     additional_headers: replyTo,
+    attachments: "",
+    use_html: false,
+    exclude_blank: false,
+  });
+}
+
+// CF7's Mail (2) auto-responder — the email the *submitter* receives.
+// Recipient is the email field tag (e.g. `[email]`) so CF7 substitutes
+// whatever the user typed. Body echoes the fields they submitted as a
+// receipt-of-submission. Subject defaults to "Thank you for contacting
+// <SiteTitle>" — admins can edit per-form in wp-admin → Contact.
+function buildMail2Serialized(args: {
+  submitterField: string;
+  sender: string;
+  siteTitle: string;
+  fields: NamedField[];
+}): string {
+  const bodyLines = [
+    `Hi [${args.submitterField}],`,
+    "",
+    `Thanks for reaching out to ${args.siteTitle} — we've received your message and will follow up shortly. For reference, here's what you sent:`,
+    "",
+  ];
+  for (const nf of args.fields) {
+    const label = nf.field.label || nf.cf7Name;
+    bodyLines.push(`${label}: [${nf.cf7Name}]`);
+  }
+  bodyLines.push("");
+  bodyLines.push(`— ${args.siteTitle}`);
+  const body = bodyLines.join("\n");
+
+  return phpSerialize({
+    active: true,
+    subject: `Thank you for contacting ${args.siteTitle}`,
+    sender: args.sender,
+    recipient: `[${args.submitterField}]`,
+    body,
+    additional_headers: "",
     attachments: "",
     use_html: false,
     exclude_blank: false,

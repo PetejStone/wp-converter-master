@@ -131,6 +131,53 @@ function scorpion_converted_enqueue_page_assets() {
 add_action('wp_enqueue_scripts', 'scorpion_converted_enqueue_page_assets', 10);
 
 /**
+ * CF7 input format hardening — adds an HTML5 pattern attribute (and a
+ * format-hint placeholder) to rendered tel + email inputs.
+ *
+ * We do this at the rendered-HTML level rather than via CF7 form-tag
+ * options because CF7 chokes on regex metacharacters in option values,
+ * leaving the whole form-tag in raw text on the page.
+ *
+ * Phone: matches the "(NNN) NNN-NNNN" shape; placeholder shows the
+ * expected format. We do not override an existing pattern attribute,
+ * so per-form admin edits via wp-admin survive this filter.
+ *
+ * Email: non-whitespace + at + non-whitespace + dot + non-whitespace
+ * regex on top of the existing HTML5 type=email validation. Avoids
+ * character-class brackets that confuse downstream filter parsers.
+ */
+add_filter('wpcf7_form_elements', function ($html) {
+    // Tel inputs (.wpcf7-tel class is applied by CF7's tel module).
+    $html = preg_replace_callback(
+        '#(<input\\b[^>]*\\bclass="[^"]*wpcf7-tel[^"]*"[^>]*?)\\s*/?>#i',
+        function ($m) {
+            $tag = $m[1];
+            if (stripos($tag, ' pattern=') === false) {
+                $tag .= ' pattern="^\\(\\d{3}\\)\\s\\d{3}-\\d{4}$"';
+            }
+            if (stripos($tag, ' placeholder=') === false) {
+                $tag .= ' placeholder="(555) 555-5555"';
+            }
+            return $tag . ' />';
+        },
+        $html
+    );
+    // Email inputs (.wpcf7-email class).
+    $html = preg_replace_callback(
+        '#(<input\\b[^>]*\\bclass="[^"]*wpcf7-email[^"]*"[^>]*?)\\s*/?>#i',
+        function ($m) {
+            $tag = $m[1];
+            if (stripos($tag, ' pattern=') === false) {
+                $tag .= ' pattern="\\S+@\\S+\\.\\S+"';
+            }
+            return $tag . ' />';
+        },
+        $html
+    );
+    return $html;
+});
+
+/**
  * Intercept /common/usc/p/<name>.{js,html,css} requests and serve the
  * corresponding file out of the theme's js/ dir.
  *

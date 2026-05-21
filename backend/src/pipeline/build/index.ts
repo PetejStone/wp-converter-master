@@ -306,14 +306,31 @@ export async function buildWpPackage(
     basePostId: cf7BasePostId,
     siteTitle: inputs.siteTitle,
   });
-  const formIdToCf7Lookup = new Map<string, { postId: number; title: string }>();
+  // Key the form lookup by `<path>|<formId>` (NOT just formId). Scorpion
+  // reuses the same `<form id="...">` shell on different pages with
+  // different inner fields — e.g. Form_ContactSystemS3 carries the contact
+  // form on /contact-us/ and a job-application form on /careers/. Both
+  // share the same form id but fingerprint to different variants. Keying
+  // by form-id alone caused a last-write-wins overwrite where one page's
+  // shortcode resolved to the other variant's CF7 post. variant.occurrences
+  // gives us the path → formId attribution from analyzeForms, so each
+  // (path, formId) tuple maps cleanly to exactly the variant that page
+  // fingerprinted into.
+  const pathFormIdToCf7Lookup = new Map<
+    string,
+    { postId: number; title: string }
+  >();
   for (const cf7 of cf7Forms) {
     const variant = inputs.formAnalysis.variants.find(
       (v) => v.fingerprint === cf7.fingerprint,
     );
     if (!variant) continue;
-    for (const fid of variant.formIds) {
-      formIdToCf7Lookup.set(fid, { postId: cf7.postId, title: cf7.title });
+    for (const occ of variant.occurrences) {
+      if (!occ.formId) continue;
+      pathFormIdToCf7Lookup.set(`${occ.path}|${occ.formId}`, {
+        postId: cf7.postId,
+        title: cf7.title,
+      });
     }
   }
 
@@ -323,7 +340,7 @@ export async function buildWpPackage(
     pageTitleByPath,
     urlMap,
     iconMap,
-    formIdToCf7Lookup,
+    pathFormIdToCf7Lookup,
   );
   for (const t of templates) {
     await writeFile(join(templatesDir, t.filename), t.content);
@@ -336,7 +353,7 @@ export async function buildWpPackage(
     hierarchy,
     urlMap,
     iconMap,
-    formIdToCf7Lookup,
+    pathFormIdToCf7Lookup,
   );
   if (singleTemplate) {
     await writeFile(join(themeDir, "single.php"), singleTemplate.content);
@@ -429,6 +446,14 @@ function buildCf7OverridesCss(): string {
     "  box-sizing: border-box;",
     "  width: 100%;",
     "  background-color: #fff;",
+    "  color: #000;",
+    "  border: 1px solid #000;",
+    "}",
+    "",
+    "/* Select option list — keep option text readable on every theme. */",
+    ".ui-contact-form select.wpcf7-form-control option {",
+    "  color: #000;",
+    "  background-color: #fff;",
     "}",
     "",
     "/* Textareas — same look, height 80% of containing box. */",
@@ -438,6 +463,14 @@ function buildCf7OverridesCss(): string {
     "  width: 100%;",
     "  height: 80%;",
     "  background-color: #fff;",
+    "  color: #000;",
+    "  border: 1px solid #000;",
+    "}",
+    "",
+    "/* Checkbox + radio — give them the same visible border as the rest. */",
+    ".ui-contact-form input[type=\"checkbox\"].wpcf7-form-control,",
+    ".ui-contact-form input[type=\"radio\"].wpcf7-form-control {",
+    "  border: 1px solid #000;",
     "}",
     "",
     "/* ≥ 700px: text-like single-line fields go half width so two share a row. */",
