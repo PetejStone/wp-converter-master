@@ -41,7 +41,7 @@ export function buildPageTemplates(
   pageTitleByPath: Map<string, string>,
   urlMap: Map<string, string>,
   iconMap: Map<string, string>,
-  formIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
+  pathFormIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
 ): BuiltTemplates {
   const templates: PageTemplateOutput[] = [];
   const zonesByPath = new Map<string, PageContentZones>();
@@ -83,7 +83,7 @@ export function buildPageTemplates(
         templateName,
         urlMap,
         iconMap,
-        formIdToCf7Lookup,
+        pathFormIdToCf7Lookup,
       ),
     );
   }
@@ -101,7 +101,7 @@ export function buildSinglePostTemplate(
   hierarchy: PageHierarchy,
   urlMap: Map<string, string>,
   iconMap: Map<string, string>,
-  formIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
+  pathFormIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
 ): { content: string } | null {
   const blogNodes = hierarchy.nodes
     .filter((n) => n.isBlogPost)
@@ -121,7 +121,7 @@ export function buildSinglePostTemplate(
     "Single Post",
     urlMap,
     iconMap,
-    formIdToCf7Lookup,
+    pathFormIdToCf7Lookup,
     { omitHeader: true, replaceArticleWithTheContent: true },
   );
   return { content: built.content };
@@ -133,7 +133,7 @@ function buildPageTemplate(
   templateName: string,
   urlMap: Map<string, string>,
   iconMap: Map<string, string>,
-  formIdToCf7Lookup: Map<string, Cf7Lookup>,
+  pathFormIdToCf7Lookup: Map<string, Cf7Lookup>,
   options: {
     omitHeader?: boolean;
     /**
@@ -198,13 +198,21 @@ function buildPageTemplate(
   // sections — `<div id="Form" …>` on /contact-us/ but
   // `<div id="ContactS21Form" …>` on the home page, etc. The class
   // `ui-contact-form` is the consistent signal.
+  // Look up the variant CF7 form by (page.path, form id). Form ids alone
+  // aren't unique across the site — same Scorpion `<form id="...">` shell
+  // can host different inner fields on different pages (e.g. contact form
+  // on /contact-us/, careers form on /careers/). The path-qualified key
+  // resolves to whichever variant THIS exemplar fingerprinted into.
+  const lookupCf7 = (formId: string): Cf7Lookup | undefined =>
+    pathFormIdToCf7Lookup.get(`${page.path}|${formId}`);
+
   $("div.ui-contact-form").each((_, divEl) => {
     const $div = $(divEl);
     const $form = $div.closest("form");
     if ($form.length === 0) return;
     const formId = $form.attr("id");
     if (!formId) return;
-    const lookup = formIdToCf7Lookup.get(formId);
+    const lookup = lookupCf7(formId);
     if (!lookup) return;
     const token = `WP_CF7_FORM_${cf7Replacements.size}`;
     cf7Replacements.set(token, makeShortcode(lookup));
@@ -219,7 +227,7 @@ function buildPageTemplate(
     if (formsToUnwrap.has(formEl)) return;
     const id = $form.attr("id");
     if (!id) return;
-    const lookup = formIdToCf7Lookup.get(id);
+    const lookup = lookupCf7(id);
     if (!lookup) return;
     const token = `WP_CF7_FORM_${cf7Replacements.size}`;
     cf7Replacements.set(token, makeShortcode(lookup));

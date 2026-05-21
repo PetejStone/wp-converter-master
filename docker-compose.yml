@@ -88,6 +88,23 @@ services:
     profiles:
       - tools
 
+  # ---- Local mail catcher for CF7 form testing. WP's wp_mail() is routed
+  # ---- through this via the WP Mail SMTP plugin (configured by the
+  # ---- import-to-wp.ts script). Mailpit catches every email locally so we
+  # ---- can verify the client notification + the user auto-responder
+  # ---- without a real SMTP provider. UI at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: scorpion-wp-converter-mailpit
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      - "8025:8025"  # web UI
+      - "1025:1025"  # SMTP listener (WP container reaches it via host 'mailpit')
+
   # ---- App services. Run `docker compose up -d` to start everything.
   # ---- Source is bind-mounted for hot reload; node_modules is preserved
   # ---- in a named volume so the host's lock isn't fought over.

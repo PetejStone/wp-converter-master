@@ -308,8 +308,17 @@ function buildCf7Item(form: Cf7Form): string {
   const meta = [
     postmetaRaw("_form", form.formTagMarkup),
     postmetaRaw("_mail", form.mailSerialized),
+    // Mail (2) auto-responder. Only emitted when the form has an
+    // addressable email field — otherwise we'd be telling CF7 to mail a
+    // literal "[your-email]" string. CF7 treats a missing _mail_2 as
+    // inactive, so omitting is fine.
+    form.mail2Serialized
+      ? postmetaRaw("_mail_2", form.mail2Serialized)
+      : "",
     postmetaRaw("_locale", "en_US"),
-  ].join("\n");
+  ]
+    .filter((s) => s.length > 0)
+    .join("\n");
 
   return `    <item>
       <title>${xmlText(form.title)}</title>
