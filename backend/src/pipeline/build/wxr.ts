@@ -1,3 +1,4 @@
+import type { BlogCategory, BlogEntry } from "../ingest";
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
 import type { Cf7Form } from "./cf7-forms";
 import type { PageHierarchy, PageNode } from "./hierarchy";
@@ -15,6 +16,8 @@ export interface WxrInputs {
   iconMap: Map<string, string>;
   navAnalysis?: NavAnalysis;
   cf7Forms?: Cf7Form[];
+  blogCategories?: BlogCategory[];
+  blogEntries?: BlogEntry[];
 }
 
 const PRIMARY_MENU_TERM_ID = 1;
@@ -27,8 +30,13 @@ export function buildWxrXml(inputs: WxrInputs): string {
   );
   const pubDate = new Date().toUTCString();
 
+  const categoriesByPath = buildCategoriesByPath(
+    inputs.blogCategories ?? [],
+    inputs.blogEntries ?? [],
+  );
+
   const pageItems = inputs.hierarchy.nodes.map((node) =>
-    buildPageItem(node, zonesByPath, inputs),
+    buildPageItem(node, zonesByPath, categoriesByPath, inputs),
   );
 
   const dominantNav = pickDominantNavVariant(inputs.navAnalysis);
@@ -39,7 +47,13 @@ export function buildWxrXml(inputs: WxrInputs): string {
 
   const cf7Items = (inputs.cf7Forms ?? []).map(buildCf7Item);
 
+  const categoryTerms = (inputs.blogCategories ?? []).map((cat, i) =>
+    buildCategoryTerm(cat, i + 2),
+  );
+
   const itemsBlock = [...pageItems, ...navItems, ...cf7Items].join("\n");
+  const categoryBlock =
+    categoryTerms.length > 0 ? categoryTerms.join("\n") + "\n" : "";
   const termBlock = navTerm ? `${navTerm}\n` : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -66,15 +80,51 @@ export function buildWxrXml(inputs: WxrInputs): string {
       <wp:author_first_name><![CDATA[]]></wp:author_first_name>
       <wp:author_last_name><![CDATA[]]></wp:author_last_name>
     </wp:author>
-${termBlock}${itemsBlock}
+${categoryBlock}${termBlock}${itemsBlock}
   </channel>
 </rss>
 `;
 }
 
+// Each Scorpion blog category becomes a `<wp:category>` block in the
+// WXR channel. The WordPress Importer creates terms on first encounter
+// regardless of the term_id we supply (WP assigns its own); we just
+// emit deterministic, non-colliding IDs starting at 2 to keep nav-menu
+// term_id 1 reserved. category_nicename (slug) is the canonical join
+// key — `<category nicename="…">` elements on items reference it.
+function buildCategoryTerm(cat: BlogCategory, termId: number): string {
+  return `    <wp:category>
+      <wp:term_id>${termId}</wp:term_id>
+      <wp:category_nicename><![CDATA[${cat.slug}]]></wp:category_nicename>
+      <wp:category_parent><![CDATA[]]></wp:category_parent>
+      <wp:cat_name>${cdata(cat.name)}</wp:cat_name>
+    </wp:category>`;
+}
+
+// Build a path → BlogCategory[] index for fast lookup at item-emit
+// time. Unknown category IDs (referenced in #BlogTable but absent
+// from #BlogCategories) are skipped silently — the entry still gets
+// emitted, just without that category.
+function buildCategoriesByPath(
+  categories: BlogCategory[],
+  entries: BlogEntry[],
+): Map<string, BlogCategory[]> {
+  if (categories.length === 0 || entries.length === 0) return new Map();
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  const out = new Map<string, BlogCategory[]>();
+  for (const entry of entries) {
+    const cats = entry.categoryIds
+      .map((id) => byId.get(id))
+      .filter((c): c is BlogCategory => c !== undefined);
+    if (cats.length > 0) out.set(entry.path, cats);
+  }
+  return out;
+}
+
 function buildPageItem(
   node: PageNode,
   zonesByPath: Map<string, PageContentZones>,
+  categoriesByPath: Map<string, BlogCategory[]>,
   inputs: WxrInputs,
 ): string {
   const page = node.page;
@@ -161,6 +211,21 @@ function buildPageItem(
     ? cdata(`<!-- wp:freeform -->\n${bodyHtml}\n<!-- /wp:freeform -->`)
     : "<![CDATA[]]>";
 
+  // Category assignment only applies to blog posts. WordPress's importer
+  // matches `<category nicename="…" domain="category">` to the term by
+  // slug and creates the term if it's missing — the `<wp:category>` blocks
+  // above guarantee creation so the slugs always resolve to a known term.
+  const categoryLines =
+    node.isBlogPost && categoriesByPath.has(node.path)
+      ? categoriesByPath
+          .get(node.path)!
+          .map(
+            (c) =>
+              `      <category domain="category" nicename="${xmlText(c.slug)}">${cdata(c.name)}</category>`,
+          )
+          .join("\n") + "\n"
+      : "";
+
   return `    <item>
       <title>${xmlText(page.title || node.postName)}</title>
       <link>${xmlText(page.canonical)}</link>
@@ -170,7 +235,7 @@ function buildPageItem(
       <description></description>
       <content:encoded>${contentEncoded}</content:encoded>
       <excerpt:encoded><![CDATA[]]></excerpt:encoded>
-      <wp:post_id>${node.postId}</wp:post_id>
+${categoryLines}      <wp:post_id>${node.postId}</wp:post_id>
       <wp:post_date><![CDATA[${sqlDate}]]></wp:post_date>
       <wp:post_date_gmt><![CDATA[${sqlDate}]]></wp:post_date_gmt>
       <wp:comment_status><![CDATA[closed]]></wp:comment_status>

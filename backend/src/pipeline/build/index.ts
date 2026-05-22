@@ -368,6 +368,8 @@ export async function buildWpPackage(
     iconMap,
     navAnalysis: inputs.navAnalysis,
     cf7Forms,
+    blogCategories: inputs.ingest.blogCategories,
+    blogEntries: inputs.ingest.blogEntries,
   });
   await writeFile(join(outputDir, "import.xml"), wxr);
 
@@ -386,6 +388,10 @@ export async function buildWpPackage(
       failedMedia: mediaOutcome.failedCount,
       formVariantCount: inputs.formAnalysis.variants.length,
       redirectCount: inputs.ingest.redirects.length,
+      blogCategoryCount: inputs.ingest.blogCategories.length,
+      blogPostCount: inputs.ingest.blogEntries.filter(
+        (e) => e.categoryIds.length > 0,
+      ).length,
       knownLimitations: limitations,
     }),
   );

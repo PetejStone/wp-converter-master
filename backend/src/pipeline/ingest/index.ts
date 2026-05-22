@@ -7,19 +7,31 @@ export async function ingestWpConverter(
 ): Promise<IngestResult> {
   const normalized = new URL(siteUrl).origin;
   const html = await fetchWpConverterHtml(normalized);
-  const { pages, contentZoneIds, iconMap, redirects } = parseWpConverter(
-    html,
-    normalized,
-  );
+  const {
+    pages,
+    contentZoneIds,
+    iconMap,
+    redirects,
+    blogCategories,
+    blogEntries,
+  } = parseWpConverter(html, normalized);
   return {
     siteUrl: normalized,
     pages,
     contentZoneIds,
     iconMap,
     redirects,
+    blogCategories,
+    blogEntries,
   };
 }
 
-export type { IngestResult, ScorpionPage, SiteRedirect } from "./types";
+export type {
+  BlogCategory,
+  BlogEntry,
+  IngestResult,
+  ScorpionPage,
+  SiteRedirect,
+} from "./types";
 export type { IngestFetchCategory } from "./errors";
 export { IngestError, IngestFetchError, IngestParseError } from "./errors";

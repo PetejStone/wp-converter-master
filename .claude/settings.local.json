@@ -58,7 +58,8 @@
       "Read(//c/Users/Jesse.Solis/AppData/Local/Temp/scorpion-conversions/4128b459-f69c-4ec5-be4e-f9972bb64725/output/theme/scorpion-converted/js//**)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:www.tennesseeplumbinginc.com)"
+      "WebFetch(domain:www.tennesseeplumbinginc.com)",
+      "Bash(curl *)"
     ]
   }
 }

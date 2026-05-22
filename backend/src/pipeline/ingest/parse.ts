@@ -1,12 +1,19 @@
 import * as cheerio from "cheerio";
 import { IngestParseError } from "./errors";
-import type { ScorpionPage, SiteRedirect } from "./types";
+import type {
+  BlogCategory,
+  BlogEntry,
+  ScorpionPage,
+  SiteRedirect,
+} from "./types";
 
 export interface ParsedTables {
   pages: ScorpionPage[];
   contentZoneIds: Set<string>;
   iconMap: Map<string, string>;
   redirects: SiteRedirect[];
+  blogCategories: BlogCategory[];
+  blogEntries: BlogEntry[];
 }
 
 export function parseWpConverter(
@@ -18,7 +25,16 @@ export function parseWpConverter(
   const contentZoneIds = parseContentIdsTable($, siteUrl);
   const iconMap = parseSiteIconTable($);
   const redirects = parseSiteRedirectTable($);
-  return { pages, contentZoneIds, iconMap, redirects };
+  const blogCategories = parseBlogCategoriesTable($);
+  const blogEntries = parseBlogTable($);
+  return {
+    pages,
+    contentZoneIds,
+    iconMap,
+    redirects,
+    blogCategories,
+    blogEntries,
+  };
 }
 
 function parseSiteMapTable(
@@ -212,4 +228,132 @@ function normalizeRedirectSource(raw: string): string {
   if (!s.startsWith("/")) s = "/" + s;
   if (!s.includes("*") && !s.endsWith("/")) s += "/";
   return s;
+}
+
+// #BlogCategories holds (Category Name, Category ID). Optional table —
+// older /wp-converter/ versions don't expose it; the WXR builder emits
+// no category terms in that case.
+function parseBlogCategoriesTable($: cheerio.CheerioAPI): BlogCategory[] {
+  const table = $("#BlogCategories");
+  if (table.length === 0) return [];
+
+  const headerCells = table.find("tr").first().find("th, td");
+  const headerIndex = new Map<string, number>();
+  headerCells.each((i, el) => {
+    headerIndex.set($(el).text().trim().toLowerCase(), i);
+  });
+  const idxOr = (labels: string[], fallback: number): number => {
+    for (const label of labels) {
+      const i = headerIndex.get(label);
+      if (i !== undefined) return i;
+    }
+    return fallback;
+  };
+  const nameIdx = idxOr(["category name", "name"], 0);
+  const idIdx = idxOr(["category id", "id"], 1);
+
+  const seenId = new Set<string>();
+  const seenSlug = new Set<string>();
+  const out: BlogCategory[] = [];
+  table.find("tr").each((index, tr) => {
+    if (index === 0) return;
+    const cells = $(tr).find("td");
+    if (cells.length < 2) return;
+
+    const name = cells.eq(nameIdx).text().trim();
+    const id = cells.eq(idIdx).text().trim();
+    if (!name || !id) return;
+    if (seenId.has(id)) return;
+    seenId.add(id);
+
+    // Disambiguate slug collisions (e.g. "Drains/Pipes" and "Drains Pipes"
+    // both yield "drains-pipes") with a numeric suffix.
+    let slug = slugifyCategoryName(name);
+    if (!slug) slug = `category-${id}`;
+    if (seenSlug.has(slug)) {
+      let n = 2;
+      while (seenSlug.has(`${slug}-${n}`)) n++;
+      slug = `${slug}-${n}`;
+    }
+    seenSlug.add(slug);
+
+    out.push({ id, name, slug });
+  });
+  return out;
+}
+
+// #BlogTable holds (Entry ID, Entry Name, Path, Categories). The
+// Categories column is a comma-separated list of Category IDs that join
+// to #BlogCategories. Optional table — older /wp-converter/ versions
+// don't expose it; the WXR builder skips category assignment in that
+// case but still emits the posts (the page → post routing happens via
+// the blog-shape URL match in build/hierarchy.ts, independently of
+// this table).
+function parseBlogTable($: cheerio.CheerioAPI): BlogEntry[] {
+  const table = $("#BlogTable");
+  if (table.length === 0) return [];
+
+  const headerCells = table.find("tr").first().find("th, td");
+  const headerIndex = new Map<string, number>();
+  headerCells.each((i, el) => {
+    headerIndex.set($(el).text().trim().toLowerCase(), i);
+  });
+  const idxOr = (labels: string[], fallback: number): number => {
+    for (const label of labels) {
+      const i = headerIndex.get(label);
+      if (i !== undefined) return i;
+    }
+    return fallback;
+  };
+  const pathIdx = idxOr(["path", "url"], 2);
+  const categoriesIdx = idxOr(["categories", "category"], 3);
+
+  const seenPath = new Set<string>();
+  const out: BlogEntry[] = [];
+  table.find("tr").each((index, tr) => {
+    if (index === 0) return;
+    const cells = $(tr).find("td");
+    if (cells.length < 3) return;
+
+    const rawPath = cells.eq(pathIdx).text().trim();
+    if (!rawPath) return;
+    const path = normalizeBlogPath(rawPath);
+    if (!path) return;
+    if (seenPath.has(path)) return;
+    seenPath.add(path);
+
+    const rawCategories =
+      cells.length > categoriesIdx
+        ? cells.eq(categoriesIdx).text().trim()
+        : "";
+    const categoryIds = rawCategories
+      ? rawCategories
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+      : [];
+
+    out.push({ path, categoryIds });
+  });
+  return out;
+}
+
+// Lowercase + leading/trailing slash. Matches build/hierarchy.ts's
+// normalizePath so the join from BlogEntry.path to PageNode.path is
+// reliable regardless of slash variations in the source table.
+function normalizeBlogPath(raw: string): string {
+  const trimmed = raw.trim().replace(/^\/+|\/+$/g, "");
+  if (!trimmed) return "";
+  return "/" + trimmed + "/";
+}
+
+// Match WordPress sanitize_title behavior closely enough that the slug
+// stays predictable. Apostrophes are dropped (so "Do's" → "dos", not
+// "do-s"); other non-alphanumerics collapse to single hyphens.
+function slugifyCategoryName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }

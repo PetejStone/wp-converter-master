@@ -29,6 +29,26 @@ export interface SiteRedirect {
   to: string;
 }
 
+// A blog category from `#BlogCategories` on /wp-converter/. `id` is the
+// Scorpion-internal numeric identifier used to join against BlogEntry's
+// categoryIds. `slug` is derived from the name at parse time and used as
+// the WordPress term nicename so the WXR import stays deterministic.
+export interface BlogCategory {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+// A blog entry from `#BlogTable` on /wp-converter/. The `path` joins to
+// the matching ScorpionPage entry from #SiteMapListTable (those entries
+// are already emitted as `post_type=post` via the blog-shape URL match
+// in build/hierarchy.ts). `categoryIds` is the comma-separated list from
+// the Categories column; an empty array means uncategorized.
+export interface BlogEntry {
+  path: string;
+  categoryIds: string[];
+}
+
 export interface IngestResult {
   siteUrl: string;
   pages: ScorpionPage[];
@@ -42,4 +62,12 @@ export interface IngestResult {
   // plugin via `wp redirection import …` in the wp:import step. Empty
   // when the site hasn't been updated to expose the table yet.
   redirects: SiteRedirect[];
+  // Blog categories from `#BlogCategories`. Emitted as `<wp:category>`
+  // entries in the WXR. Empty when the site hasn't been updated to
+  // expose the table yet.
+  blogCategories: BlogCategory[];
+  // Blog entry → category mappings from `#BlogTable`. The WXR builder
+  // attaches `<category>` elements to the matching post items by path.
+  // Empty when the site hasn't been updated to expose the table yet.
+  blogEntries: BlogEntry[];
 }
