@@ -540,16 +540,43 @@ function collectLimitations(
 }
 
 // Redirection plugin's CSV import expects `source,target,regex,code` with
-// a header row. regex=0 forces literal URL matching; code=301 is the
-// permanent-redirect default. Fields that contain a comma or quote are
-// double-quoted per RFC 4180; embedded quotes are doubled.
+// a header row. Literal rules emit regex=0. Wildcard rules from Scorpion's
+// #SiteRedirectTable (e.g. `/blog/*` → `/our-blog/*`) emit regex=1 with
+// the source `*` converted to a greedy capture `(.*)` and the target `*`
+// to backreference `$1` — Scorpion treats the wildcard as multi-segment.
+// Only the 1*-per-side pairing seen in real Scorpion exports is supported;
+// anything else is dropped so a broken rule can't silently 404 visitors.
+// code=301 is the permanent-redirect default. Fields containing a comma
+// or quote are double-quoted per RFC 4180; embedded quotes are doubled.
 function buildRedirectsCsv(redirects: SiteRedirect[]): string {
   const escape = (v: string): string =>
     /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 
   const lines: string[] = ["source,target,regex,code"];
   for (const { from, to } of redirects) {
-    lines.push(`${escape(from)},${escape(to)},0,301`);
+    const fromStars = (from.match(/\*/g) ?? []).length;
+    const toStars = (to.match(/\*/g) ?? []).length;
+
+    if (fromStars === 0 && toStars === 0) {
+      lines.push(`${escape(from)},${escape(to)},0,301`);
+      continue;
+    }
+    if (fromStars === 1 && toStars === 1) {
+      const source = `^${escapeRegexExceptStar(from).replace("*", "(.*)")}$`;
+      const target = to.replace("*", "$1");
+      lines.push(`${escape(source)},${escape(target)},1,301`);
+      continue;
+    }
+    console.warn(
+      `[redirects] skipping unsupported wildcard rule (source ${fromStars}× *, target ${toStars}× *): ${from} -> ${to}`,
+    );
   }
   return lines.join("\n") + "\n";
+}
+
+// Escape regex metacharacters in a URL path so it can be embedded in a
+// regex pattern verbatim. `*` is left alone — the caller substitutes it
+// with `(.*)` after escaping.
+function escapeRegexExceptStar(s: string): string {
+  return s.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
 }

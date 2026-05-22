@@ -201,13 +201,15 @@ function parseSiteRedirectTable($: cheerio.CheerioAPI): SiteRedirect[] {
 // Strip query strings and ensure leading + trailing slash. Case is
 // preserved — the Redirection plugin handles URL matching downstream and
 // has its own per-rule case-sensitivity setting, so pre-lowercasing here
-// would just throw away information.
+// would just throw away information. Wildcard sources (e.g. `/blog/*`)
+// skip the trailing-slash append — appending would yield `/blog/*/` which
+// can never match. The CSV builder converts `*` to a regex capture group.
 function normalizeRedirectSource(raw: string): string {
   let s = raw.trim();
   const q = s.indexOf("?");
   if (q >= 0) s = s.substring(0, q);
   if (!s) return "";
   if (!s.startsWith("/")) s = "/" + s;
-  if (!s.endsWith("/")) s += "/";
+  if (!s.includes("*") && !s.endsWith("/")) s += "/";
   return s;
 }
