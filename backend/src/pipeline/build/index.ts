@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CrawlResult } from "../crawl";
 import {
@@ -146,6 +146,22 @@ export async function buildWpPackage(
     urlMap.set(url, `${jsWpPathPrefix}/${filename}`);
   }
 
+  // Scorpion's cookie consent banner (`manage-cookies.js`) is dropped from
+  // the bundle. The script fetches a `manage-cookies.html` companion at
+  // runtime that we don't ship; the fetch 404s and the script's
+  // DOMParser fallback attaches WP's 404 page (site title + recent posts)
+  // to a Shadow DOM on every page. The converted WP site gets a proper
+  // cookie plugin (Complianz, installed by import-to-wp.ts) instead.
+  // Removed from disk + lookup maps so it's neither registered nor
+  // referenced by the per-page enqueue layer.
+  const COOKIE_BANNER_BLOCKLIST = /^manage-cookies\./i;
+  for (const [url, filename] of Array.from(jsFilenameByUrl)) {
+    if (!COOKIE_BANNER_BLOCKLIST.test(filename)) continue;
+    jsFilenameByUrl.delete(url);
+    urlMap.delete(url);
+    await rm(join(jsDir, filename), { force: true });
+  }
+
   // Build the hierarchy now so per-page inline CSS files can be named after
   // each page's templateSlug — that's the same key the enqueue logic uses
   // at request time.
@@ -208,7 +224,11 @@ export async function buildWpPackage(
   cssFilenames.push(cf7OverridesFilename);
   const jsFilenames: string[] = [];
   for (const r of jsOutcome.results) {
-    if (r.status === "ok" && r.filename) jsFilenames.push(r.filename);
+    if (r.status !== "ok" || !r.filename) continue;
+    // Drop blocklisted scripts from the registered handle set so nothing
+    // accidentally enqueues them.
+    if (COOKIE_BANNER_BLOCKLIST.test(r.filename)) continue;
+    jsFilenames.push(r.filename);
   }
 
   // Slug → ordered list of CSS / JS filenames the exemplar's Scorpion
