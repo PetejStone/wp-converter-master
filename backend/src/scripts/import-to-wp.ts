@@ -286,6 +286,18 @@ async function main() {
     "--format=json",
   ]);
 
+  // ---- 6c. Install + activate Complianz (cookie consent banner) ----
+  // Replaces Scorpion's manage-cookies banner (which we drop from the
+  // theme bundle during build because its companion HTML 404s and the
+  // script's fallback renders WP's 404 page in a shadow root). Complianz
+  // is the most popular free WP consent plugin — auto-detects scripts,
+  // jurisdiction-aware (GDPR / CCPA / etc.), and ships with a sensible
+  // default banner before the admin finishes the wizard. Admins complete
+  // setup at wp-admin → Complianz to customise categories / wording.
+  console.log("\nInstalling complianz-gdpr plugin (cookie consent)…");
+  wpCli(["plugin", "install", "complianz-gdpr", "--force"]);
+  wpCli(["plugin", "activate", "complianz-gdpr"]);
+
   // ---- 6c. Install + activate Redirection (only when there's a CSV) ----
   // Redirection owns the 301 rules ingested from Scorpion's
   // #SiteRedirectTable. The build emits redirects.csv only when the table
