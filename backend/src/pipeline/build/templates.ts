@@ -6,6 +6,7 @@ import {
   type PageHierarchy,
 } from "./hierarchy";
 import { stripBlockedDomainContent } from "./strip-blocked-domains";
+import { stripScorpionLinks } from "./strip-scorpion-links";
 import { substituteSvgIcons } from "./svg-icons";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { sanitizeZoneId } from "./zone-meta";
@@ -227,6 +228,11 @@ function buildPageTemplate(
   let html = rewriteHtmlUrls(page.template, page.pageUrl, urlMap);
   html = substituteSvgIcons(html, iconMap);
   html = stripBlockedDomainContent(html);
+  // Scrub anchor backlinks to scorpion.co (footer "Powered by Scorpion",
+  // wrapped branding logos, etc.). The converted site is no longer on
+  // the original platform — these links would be both stale and
+  // inappropriate to ship.
+  html = stripScorpionLinks(html);
 
   // Strip externally-loaded CSS/JS — WordPress wp_enqueue handles those.
   // Strip <style> blocks too — the orchestrator writes them out as a
@@ -351,6 +357,7 @@ function buildPageTemplate(
       let innerHtml = rewriteHtmlUrls(zone.innerHtml, page.pageUrl, urlMap);
       innerHtml = substituteSvgIcons(innerHtml, iconMap);
       innerHtml = stripBlockedDomainContent(innerHtml);
+      innerHtml = stripScorpionLinks(innerHtml);
       return innerHtml;
     }
     const safeId = sanitizeZoneId(zone.zoneId);

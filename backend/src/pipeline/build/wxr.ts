@@ -3,6 +3,10 @@ import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
 import type { Cf7Form } from "./cf7-forms";
 import type { PageHierarchy, PageNode } from "./hierarchy";
 import { stripBlockedDomainContent } from "./strip-blocked-domains";
+import {
+  isStrippedScorpionLink,
+  stripScorpionLinks,
+} from "./strip-scorpion-links";
 import { substituteSvgIcons } from "./svg-icons";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { zoneMetaKey, zoneMetaOriginalKey } from "./zone-meta";
@@ -156,6 +160,7 @@ function buildPageItem(
       let innerHtml = rewriteHtmlUrls(z.innerHtml, pageUrl, inputs.urlMap);
       innerHtml = substituteSvgIcons(innerHtml, inputs.iconMap);
       innerHtml = stripBlockedDomainContent(innerHtml);
+      innerHtml = stripScorpionLinks(innerHtml);
       // Two entries per zone: the editable copy that the [scorpion_zone]
       // shortcode reads, and a `__original` snapshot the "Scorpion Zones"
       // admin metabox uses for its per-zone Revert button.
@@ -210,6 +215,7 @@ function buildPageItem(
     bodyHtml = rewriteHtmlUrls(zones.bodyHtml, pageUrl, inputs.urlMap);
     bodyHtml = substituteSvgIcons(bodyHtml, inputs.iconMap);
     bodyHtml = stripBlockedDomainContent(bodyHtml);
+    bodyHtml = stripScorpionLinks(bodyHtml);
   }
   const contentEncoded = bodyHtml
     ? cdata(`<!-- wp:freeform -->\n${bodyHtml}\n<!-- /wp:freeform -->`)
@@ -296,7 +302,16 @@ function buildNavMenuItems(
   // subsequent item at depth d+1. Truncate deeper entries when depth drops.
   const parentByDepth: number[] = [];
 
-  variant.items.forEach((item, i) => {
+  // Drop scorpion.co nav links entirely. In practice these are footer
+  // credit links that the Scorpion theme exposes through the same <nav>
+  // selector as the primary menu, not real navigation entries. Filtered
+  // here (not in analyzeNavigation) so the upstream variant data stays
+  // exactly what we crawled — the strip is a WP-emission decision.
+  const filteredItems = variant.items.filter(
+    (item) => !isStrippedScorpionLink(item.href),
+  );
+
+  filteredItems.forEach((item, i) => {
     const postId = postIdOffset + i + 1;
     const parentId =
       item.depth > 0 ? (parentByDepth[item.depth - 1] ?? 0) : 0;
