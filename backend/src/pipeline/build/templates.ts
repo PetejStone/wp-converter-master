@@ -118,6 +118,79 @@ export function buildSinglePostTemplate(
   return { content: built.content };
 }
 
+// Build the /error/404 and /error/500 pages as theme files (theme/404.php
+// and theme/500.php). These pages aren't navigable WP pages — they don't
+// appear in import.xml as items and don't get post_ids. Returns whichever
+// of the two were present in the captured zones (each is independent —
+// a site may ship one without the other).
+//
+// Content zones on these pages are rendered INLINE — no [scorpion_zone]
+// shortcode call, no postmeta. The shortcode handler needs a post_id to
+// read meta from, and we deliberately dropped these from the WP post
+// table. Inline-substituted zones lose the "edit via Scorpion Zones
+// metabox" capability, which is a fair trade for the error pages since
+// admins rarely edit them; if they need to, the source HTML is right
+// there in the PHP file.
+export function buildErrorTemplates(
+  zones: PageContentZones[],
+  hierarchy: PageHierarchy,
+  urlMap: Map<string, string>,
+  iconMap: Map<string, string>,
+  pathFormIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
+): { kind: "404" | "500"; filename: string; content: string }[] {
+  const out: { kind: "404" | "500"; filename: string; content: string }[] =
+    [];
+  const zonesByPath = new Map<string, PageContentZones>();
+  for (const z of zones) zonesByPath.set(normalizePath(z.path), z);
+
+  for (const { kind, page: ingestPage } of hierarchy.errorPages) {
+    const captured = zonesByPath.get(normalizePath(ingestPage.path));
+    if (!captured) continue;
+    const built = buildPageTemplate(
+      captured,
+      kind,
+      `Error ${kind}`,
+      urlMap,
+      iconMap,
+      pathFormIdToCf7Lookup,
+      {
+        omitHeader: true,
+        inlineZones: true,
+        // 500.php may be served by Apache (ErrorDocument 500) outside the
+        // normal WP request lifecycle, so it must bootstrap WP itself for
+        // wp_head() / wp_footer() to fire and the enqueue layer to find
+        // the page slug. 404.php is served by WP's template hierarchy,
+        // which has WP already loaded — no bootstrap needed.
+        bootstrap: kind === "500" ? PHP_500_BOOTSTRAP : undefined,
+      },
+    );
+    out.push({
+      kind,
+      filename: `${kind}.php`,
+      content: built.content,
+    });
+  }
+
+  return out;
+}
+
+// Bootstrap snippet prepended to theme/500.php. Loads WP if available so
+// wp_head() / wp_footer() fire and our enqueue + page-slug detection
+// works; if wp-load.php is missing (e.g. theme installed outside a WP
+// root, or WP itself is too broken to load), the snippet silently skips
+// the require and the file still emits its static markup so the browser
+// gets *something* — better than Apache's default 500 page.
+const PHP_500_BOOTSTRAP = `<?php
+$scorpion_wp_load = $_SERVER['DOCUMENT_ROOT'] . '/wp-load.php';
+if (file_exists($scorpion_wp_load)) {
+    require_once $scorpion_wp_load;
+    define('SCORPION_RENDERING_500', true);
+    status_header(500);
+    nocache_headers();
+}
+?>
+`;
+
 function buildPageTemplate(
   page: PageContentZones,
   slug: string,
@@ -134,6 +207,21 @@ function buildPageTemplate(
      * body (stored in post_content) instead of the exemplar's body.
      */
     replaceArticleWithTheContent?: boolean;
+    /**
+     * When true, substitute each WP_CLASSIC_BLOCK_<i> placeholder with the
+     * captured zone's inner HTML directly (URL-rewritten + SVG-iconified
+     * + blocked-domain-stripped) rather than a [scorpion_zone] shortcode
+     * call. Used by theme/404.php and theme/500.php, which have no
+     * matching post in the database for the shortcode handler to read
+     * postmeta from.
+     */
+    inlineZones?: boolean;
+    /**
+     * Raw text prepended to the file before any other content. Used by
+     * theme/500.php to bootstrap WP from outside the normal request
+     * lifecycle (Apache's ErrorDocument serves the file directly).
+     */
+    bootstrap?: string;
   } = {},
 ): PageTemplateOutput {
   let html = rewriteHtmlUrls(page.template, page.pageUrl, urlMap);
@@ -250,14 +338,21 @@ function buildPageTemplate(
   html = html.replace(/<\/head>/i, "<?php wp_head(); ?>\n</head>");
   html = html.replace(/<\/body>/i, "<?php wp_footer(); ?>\n</body>");
 
-  // Replace each WP_CLASSIC_BLOCK_<index> placeholder with a per-zone
-  // shortcode call. The zone HTML lives in postmeta `_scorpion_zone_<id>`
-  // (emitted by the WXR builder); the shortcode handler in functions.php
-  // echoes it. This preserves exact per-zone placement on multi-zone pages.
+  // Replace each WP_CLASSIC_BLOCK_<index> placeholder with either a
+  // per-zone shortcode call (default — zone HTML lives in postmeta
+  // `_scorpion_zone_<id>`, emitted by the WXR builder; the shortcode
+  // handler reads it) or the captured zone HTML inline (when there's no
+  // matching post for the handler to read meta from, e.g. error pages).
   html = html.replace(PLACEHOLDER_PATTERN, (_match, indexStr: string) => {
     const i = Number.parseInt(indexStr, 10);
     const zone = page.zones[i];
     if (!zone) return "";
+    if (options.inlineZones) {
+      let innerHtml = rewriteHtmlUrls(zone.innerHtml, page.pageUrl, urlMap);
+      innerHtml = substituteSvgIcons(innerHtml, iconMap);
+      innerHtml = stripBlockedDomainContent(innerHtml);
+      return innerHtml;
+    }
     const safeId = sanitizeZoneId(zone.zoneId);
     return `<?php echo do_shortcode('[scorpion_zone id="${safeId}"]'); ?>`;
   });
@@ -268,12 +363,13 @@ function buildPageTemplate(
 /* Template Name: ${escapePhpComment(templateName)} */
 ?>
 `;
+  const bootstrap = options.bootstrap ?? "";
 
   return {
     filename: `page-${slug}.php`,
     slug,
     templateName,
-    content: header + html,
+    content: bootstrap + header + html,
   };
 }
 

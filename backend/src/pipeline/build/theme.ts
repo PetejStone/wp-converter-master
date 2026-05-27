@@ -35,19 +35,26 @@ export interface ThemeInputs {
 export function buildHtaccessAdditions(): string {
   return `# Scorpion CMS → WordPress conversion — .htaccess additions
 #
-# Paste the <IfModule> block below into your WordPress root .htaccess,
-# ABOVE the "# BEGIN WordPress" marker. This rewrites Scorpion's runtime
-# /common/usc/p/<name>.{js,css,html} requests to the converted theme so
-# they resolve on hosts that 404 unknown static paths at the edge before
-# the request reaches PHP (e.g. GoDaddy Managed WordPress).
+# Paste the directives below into your WordPress root .htaccess,
+# ABOVE the "# BEGIN WordPress" marker.
 #
-# Safe to skip on hosts where /common/usc/p/<name>.js already returns
-# 200 — the theme's functions.php intercept handles those automatically.
+# 1. The <IfModule mod_rewrite.c> block rewrites Scorpion's runtime
+#    /common/usc/p/<name>.{js,css,html} requests to the converted theme
+#    so they resolve on hosts that 404 unknown static paths at the edge
+#    before the request reaches PHP (e.g. GoDaddy Managed WordPress).
+#    Safe to skip on hosts where /common/usc/p/<name>.js already returns
+#    200 — the theme's functions.php intercept handles those automatically.
+#
+# 2. ErrorDocument 500 points Apache's 500-handler at the converted
+#    theme's 500.php. theme/404.php is picked up by WordPress's own
+#    template hierarchy and does not need an Apache directive.
 
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteRule ^common/usc/p/(.+\\.(?:js|css|html))$ /wp-content/themes/${THEME_SLUG}/js/$1 [L]
 </IfModule>
+
+ErrorDocument 500 /wp-content/themes/${THEME_SLUG}/500.php
 `;
 }
 
@@ -118,6 +125,20 @@ function scorpion_converted_page_assets_map() {
 }
 
 function scorpion_converted_current_page_slug() {
+    // theme/500.php sets this constant after bootstrapping WP so its
+    // synthetic '500' asset bundle gets enqueued. Checked first because
+    // Apache may route a 500 inside what would otherwise look like a
+    // normal request (is_page() / is_404() can both be false at that
+    // point).
+    if (defined('SCORPION_RENDERING_500')) {
+        return '500';
+    }
+    if (is_404()) {
+        // theme/404.php is picked up by WP's template hierarchy; the
+        // matching synthetic '404' bundle holds the captured
+        // /error/404 page's CSS / JS.
+        return '404';
+    }
     if (is_singular('post')) {
         // Blog posts use the dominant Scorpion-template exemplar page's
         // chrome + asset bundle. null when the site has no blog posts.

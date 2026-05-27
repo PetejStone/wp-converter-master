@@ -19,7 +19,11 @@ import { buildCf7Forms, type Cf7Form } from "./cf7-forms";
 import { buildMigrationChecklist } from "./checklist";
 import { buildPageHierarchy } from "./hierarchy";
 import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
-import { buildPageTemplates, buildSinglePostTemplate } from "./templates";
+import {
+  buildErrorTemplates,
+  buildPageTemplates,
+  buildSinglePostTemplate,
+} from "./templates";
 import {
   buildFunctionsPhp,
   buildHtaccessAdditions,
@@ -312,6 +316,53 @@ export async function buildWpPackage(
     if (exemplarNode) buildAssetsForNode(exemplarNode);
   }
 
+  // Synthetic asset bundles for theme/404.php and theme/500.php. The slugs
+  // here aren't path-derived (the error pages don't have pageSlugs — they
+  // never reach the hierarchy.nodes loop) but match the literal strings
+  // scorpion_converted_current_page_slug() returns for is_404() and
+  // SCORPION_RENDERING_500.
+  for (const { kind, page: errorPage } of hierarchy.errorPages) {
+    const slug = kind; // '404' or '500'
+    const path = errorPage.path;
+
+    // Per-error-page inline CSS file, mirroring the per-page treatment.
+    const indices = inputs.assets.pageInlineStyleIndices.get(path) ?? [];
+    if (indices.length > 0) {
+      const inlineCss = indices
+        .map((idx, i) => {
+          const block = inputs.assets.inlineStyles[idx] ?? "";
+          return `/* === inline block ${i + 1} === */\n${block}`;
+        })
+        .join("\n\n");
+      const rewritten = rewriteCssUrls(inlineCss, inputs.siteUrl, urlMap);
+      const filename = `inline-${slug}.css`;
+      await writeFile(join(cssDir, filename), rewritten);
+      // Pushed to cssFilenames below alongside the per-page set so it gets
+      // registered with wp_register_style.
+      inlineFilenameByPageSlug.set(slug, filename);
+      cssFilenames.push(filename);
+    }
+
+    const cssForPage: string[] = [];
+    const inlineFile = inlineFilenameByPageSlug.get(slug);
+    if (inlineFile) cssForPage.push(inlineFile);
+    const cssUrls = inputs.assets.pageStylesheets.get(path) ?? [];
+    for (const url of cssUrls) {
+      const filename = cssFilenameByUrl.get(url);
+      if (filename) cssForPage.push(filename);
+    }
+    cssForPage.push(cf7OverridesFilename);
+    cssFilenamesByPageSlug.set(slug, cssForPage);
+
+    const jsUrls = inputs.assets.pageScripts.get(path) ?? [];
+    const jsForPage: string[] = [];
+    for (const url of jsUrls) {
+      const filename = jsFilenameByUrl.get(url);
+      if (filename) jsForPage.push(filename);
+    }
+    jsFilenamesByPageSlug.set(slug, jsForPage);
+  }
+
   await writeFile(
     join(themeDir, "style.css"),
     buildStyleCss(inputs.siteTitle),
@@ -409,6 +460,22 @@ export async function buildWpPackage(
   );
   if (singleTemplate) {
     await writeFile(join(themeDir, "single.php"), singleTemplate.content);
+  }
+
+  // 404.php and 500.php for Scorpion's /error/404 and /error/500 pages.
+  // These get peeled off the regular WXR page list in hierarchy.ts so
+  // they don't show up as navigable WP pages — they're served by WP's
+  // 404 template hierarchy and Apache's ErrorDocument 500 (see
+  // htaccess-additions.txt) respectively.
+  const errorTemplates = buildErrorTemplates(
+    inputs.contentZones,
+    hierarchy,
+    urlMap,
+    iconMap,
+    pathFormIdToCf7Lookup,
+  );
+  for (const t of errorTemplates) {
+    await writeFile(join(themeDir, t.filename), t.content);
   }
 
   const wxr = buildWxrXml({

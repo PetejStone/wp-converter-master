@@ -48,6 +48,12 @@ export interface PageHierarchy {
   // Largest post_id used. Downstream emitters (e.g. nav menu items in the
   // WXR) start their post_ids at maxPostId + 1.
   maxPostId: number;
+  // Scorpion ships /error/404/ and /error/500/ in the sitemap. We surface
+  // their raw ingest records here but keep them OUT of `nodes` / `byPath`
+  // so they don't appear as navigable WP pages — they get emitted as
+  // theme/404.php and theme/500.php (WP's 404 hierarchy + Apache's
+  // ErrorDocument 500 respectively).
+  errorPages: { kind: "404" | "500"; page: ScorpionPage }[];
 }
 
 export function buildPageHierarchy(pages: ScorpionPage[]): PageHierarchy {
@@ -70,8 +76,18 @@ export function buildPageHierarchy(pages: ScorpionPage[]): PageHierarchy {
   // across the site, unlike post_name which is parent-scoped.
   const takenPageSlugs = new Set<string>();
 
+  const errorPages: { kind: "404" | "500"; page: ScorpionPage }[] = [];
+
   for (const path of sortedPaths) {
     const page = realByPath.get(path)!;
+    // Pull /error/404 and /error/500 aside before any hierarchy work — they
+    // don't get post_ids, post_parents, or page templates. The build step
+    // routes them to theme/404.php and theme/500.php instead.
+    const errorKind = errorPageKind(path);
+    if (errorKind) {
+      errorPages.push({ kind: errorKind, page });
+      continue;
+    }
     const segments = path.split("/").filter(Boolean);
     const blogPost = isBlogPostPath(path);
 
@@ -121,7 +137,17 @@ export function buildPageHierarchy(pages: ScorpionPage[]): PageHierarchy {
     nodes,
     byPath,
     maxPostId: nodes.length,
+    errorPages,
   };
+}
+
+// Scorpion sitemaps include `/error/404` and `/error/500` (with or without
+// trailing slash). Match both — `normalizePath` from the sort step ensures
+// any input is already trailing-slashed before we get here.
+export function errorPageKind(path: string): "404" | "500" | null {
+  if (path === "/error/404/") return "404";
+  if (path === "/error/500/") return "500";
+  return null;
 }
 
 // Maps a Scorpion Template column value to a filesystem-safe slug used
