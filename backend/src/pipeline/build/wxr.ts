@@ -128,7 +128,11 @@ function buildPageItem(
   inputs: WxrInputs,
 ): string {
   const page = node.page;
-  const templateSlug = node.templateSlug;
+  // Per-page PHP template, NOT a shared Scorpion-template-grouped file.
+  // pageSlug is unique per page; the matching `templates/page-<pageSlug>.php`
+  // captures this page's exact DOM, including banner imagery, side nav,
+  // and any content zones that only exist on this page.
+  const pageSlug = node.pageSlug;
   const zones = zonesByPath.get(node.path) ?? zonesByPath.get(page.path);
   const pageUrl = zones?.pageUrl ?? page.canonical;
   // Stagger each item's post_date by node.postId seconds. The
@@ -174,7 +178,7 @@ function buildPageItem(
     ? ""
     : postmeta(
         "_wp_page_template",
-        `templates/page-${templateSlug}.php`,
+        `templates/page-${pageSlug}.php`,
       );
 
   const meta = [...zoneMeta, templateMeta, ...yoastMeta]
@@ -190,7 +194,7 @@ function buildPageItem(
   const postParent = node.isBlogPost ? 0 : node.parentPostId;
   const pageTemplateLine = node.isBlogPost
     ? ""
-    : `\n      <wp:page_template><![CDATA[templates/page-${templateSlug}.php]]></wp:page_template>`;
+    : `\n      <wp:page_template><![CDATA[templates/page-${pageSlug}.php]]></wp:page_template>`;
 
   // Blog posts: emit the captured `<article class="cnt-stl">` inner HTML
   // as post_content so single.php's the_content() call renders it. Use a

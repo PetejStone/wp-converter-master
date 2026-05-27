@@ -1,12 +1,13 @@
 export const THEME_SLUG = "scorpion-converted";
 
 export interface PerPageAssets {
-  // Template slug (e.g. "home" or "residential-plumbing-services") →
-  // ordered list of CSS / JS filenames the page should load. Filenames
-  // resolve to files in theme/css/ and theme/js/ respectively, plus the
-  // per-page inline CSS filename (also written to theme/css/).
-  cssFilenamesByTemplateSlug: Map<string, string[]>;
-  jsFilenamesByTemplateSlug: Map<string, string[]>;
+  // Page slug (path-derived, e.g. "home", "about-us",
+  // "residential-plumbing-services-drain-lines-clogged-drains") → ordered
+  // list of CSS / JS filenames the page should load. Filenames resolve to
+  // files in theme/css/ and theme/js/ respectively, plus the per-page
+  // inline CSS filename (also written to theme/css/).
+  cssFilenamesByPageSlug: Map<string, string[]>;
+  jsFilenamesByPageSlug: Map<string, string[]>;
 }
 
 export interface ThemeInputs {
@@ -17,10 +18,11 @@ export interface ThemeInputs {
   cssFilenames: string[];
   jsFilenames: string[];
   perPage: PerPageAssets;
-  // Template slug used for `post_type=post` views via single.php. Picked
-  // from the dominant Scorpion template among blog posts. If null the
-  // post enqueue branch is a no-op (no blog posts on this site).
-  postTemplateSlug: string | null;
+  // Page slug used for `post_type=post` views via single.php. Picked
+  // from the dominant Scorpion-template exemplar page among blog posts.
+  // null when the site has no blog posts (post enqueue branch becomes a
+  // no-op).
+  postPageSlug: string | null;
 }
 
 // Apache rewrite snippet that ships alongside the export. The theme's
@@ -89,8 +91,8 @@ export function buildFunctionsPhp(inputs: ThemeInputs): string {
     jsHandleByFilename,
   );
 
-  const postSlugPhp = inputs.postTemplateSlug
-    ? `'${escapePhp(inputs.postTemplateSlug)}'`
+  const postSlugPhp = inputs.postPageSlug
+    ? `'${escapePhp(inputs.postPageSlug)}'`
     : "null";
 
   return `<?php
@@ -107,17 +109,18 @@ ${registerScripts || "    // (no scripts discovered)"}
 }
 add_action('wp_enqueue_scripts', 'scorpion_converted_register_assets', 5);
 
-// Map of template slug → ['css' => [handles], 'js' => [handles]] in the
-// original document load order from each Scorpion page.
+// Map of page slug → ['css' => [handles], 'js' => [handles]] in the
+// original document load order from each Scorpion page. One entry per
+// converted page (post_type=page) — post_type=post views are served by
+// single.php using the exemplar blog page's slug.
 function scorpion_converted_page_assets_map() {
     return ${pageAssetsPhp};
 }
 
-function scorpion_converted_current_template_slug() {
+function scorpion_converted_current_page_slug() {
     if (is_singular('post')) {
-        // Blog posts use the chrome of whichever Scorpion template was
-        // most common among the site's blog posts at conversion time.
-        // null when the site has no blog posts.
+        // Blog posts use the dominant Scorpion-template exemplar page's
+        // chrome + asset bundle. null when the site has no blog posts.
         return ${postSlugPhp};
     }
     if (!is_page()) {
@@ -134,7 +137,7 @@ function scorpion_converted_current_template_slug() {
 }
 
 function scorpion_converted_enqueue_page_assets() {
-    $slug = scorpion_converted_current_template_slug();
+    $slug = scorpion_converted_current_page_slug();
     if ($slug === null) {
         return;
     }
@@ -426,8 +429,8 @@ function buildPageAssetsPhpArray(
   jsHandleByFilename: Map<string, string>,
 ): string {
   const slugs = new Set<string>([
-    ...perPage.cssFilenamesByTemplateSlug.keys(),
-    ...perPage.jsFilenamesByTemplateSlug.keys(),
+    ...perPage.cssFilenamesByPageSlug.keys(),
+    ...perPage.jsFilenamesByPageSlug.keys(),
   ]);
   if (slugs.size === 0) {
     return "array()";
@@ -436,8 +439,8 @@ function buildPageAssetsPhpArray(
   const sortedSlugs = [...slugs].sort();
   const lines: string[] = ["array("];
   for (const slug of sortedSlugs) {
-    const cssFiles = perPage.cssFilenamesByTemplateSlug.get(slug) ?? [];
-    const jsFiles = perPage.jsFilenamesByTemplateSlug.get(slug) ?? [];
+    const cssFiles = perPage.cssFilenamesByPageSlug.get(slug) ?? [];
+    const jsFiles = perPage.jsFilenamesByPageSlug.get(slug) ?? [];
     const cssHandles = cssFiles
       .map((f) => cssHandleByFilename.get(f))
       .filter((h): h is string => !!h);

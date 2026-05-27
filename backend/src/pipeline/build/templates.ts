@@ -28,13 +28,16 @@ export interface Cf7Lookup {
   title: string;
 }
 
-// One PHP template per unique Scorpion Template value, NOT per page. Many
-// pages share a template (e.g. 22 "System" pages → one page-system.php).
-// We pick the exemplar (lowest-postId page in the group) as the source for
-// the template HTML; sister pages assigned to it inherit its chrome.
-// Blog posts are excluded — they're routed through single.php instead.
-// The PHP files include a `Template Name:` header so each shows up as an
-// option in the WP admin Page → Template dropdown.
+// One PHP template per page. Pages that share a Scorpion Template value
+// (e.g. 22 service pages all assigned the same Scorpion template) still
+// get their own PHP template here — per-page banner imagery, side
+// navigation, and content zones that exist only on specific pages cannot
+// be expressed by a shared template-per-Scorpion-template-value file
+// without losing visual accuracy. Blog posts are excluded — they're
+// routed through single.php instead. Each PHP file includes a
+// `Template Name:` header so it shows up in the WP admin Page → Template
+// dropdown; the title is the page's own title so admins can locate it
+// in the list by content rather than by Scorpion template id.
 export function buildPageTemplates(
   zones: PageContentZones[],
   hierarchy: PageHierarchy,
@@ -49,37 +52,25 @@ export function buildPageTemplates(
     zonesByPath.set(normalizePath(z.path), z);
   }
 
-  const groupBySlug = new Map<string, typeof hierarchy.nodes>();
   for (const node of hierarchy.nodes) {
     if (node.isBlogPost) continue;
-    const list = groupBySlug.get(node.templateSlug) ?? [];
-    list.push(node);
-    groupBySlug.set(node.templateSlug, list);
-  }
-
-  for (const [slug, group] of groupBySlug) {
-    group.sort((a, b) => a.postId - b.postId);
-    const exemplar = group[0];
-    const exemplarZones = zonesByPath.get(normalizePath(exemplar.path));
-    if (!exemplarZones) continue;
-    // The template name shown in the admin dropdown. When both the
-    // human-readable "Template Name" column and the underlying template
-    // ID are present we show "Name (id)" so two templates that happen to
-    // share a display name stay distinguishable in the dropdown. Falls
-    // back to name-only, then templateValueToDisplayName for ID-only
-    // rows, and finally to the page title / path so it's never blank.
+    const pageZones = zonesByPath.get(normalizePath(node.path));
+    if (!pageZones) continue;
+    // Template name shown in the WP admin dropdown. Prefer the page's
+    // human-readable title (admins recognize pages by name); fall back to
+    // Scorpion's Template column for pages with empty titles, then to the
+    // path / page slug so the entry is never blank.
     const templateName = (() => {
-      const name = exemplar.page.templateName.trim();
-      const id = exemplar.page.template.trim();
-      if (name && id && name !== id) return `${name} (${id})`;
-      if (name) return name;
+      const title = (pageTitleByPath.get(node.path) ?? "").trim();
+      if (title) return title;
+      const id = node.page.template.trim();
       if (id) return templateValueToDisplayName(id);
-      return pageTitleByPath.get(exemplar.path) || exemplar.path || slug;
+      return node.path || node.pageSlug;
     })();
     templates.push(
       buildPageTemplate(
-        exemplarZones,
-        slug,
+        pageZones,
+        node.pageSlug,
         templateName,
         urlMap,
         iconMap,

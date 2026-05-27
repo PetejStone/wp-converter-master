@@ -16,16 +16,16 @@ export.zip
 │       ├── css/
 │       │   ├── bundle-1.css         ← Extracted Scorpion stylesheets
 │       │   ├── bundle-2.css
-│       │   ├── inline-home.css      ← Per-page inline <style> blocks
-│       │   ├── inline-about.css
-│       │   └── ...
+│       │   ├── inline-home.css      ← Per-page inline <style> blocks,
+│       │   ├── inline-about-us.css     one file per converted page
+│       │   └── ...                     (named by pageSlug)
 │       ├── js/
 │       │   ├── utility-1.js         ← Extracted Scorpion JS utilities
 │       │   └── ...
 │       └── templates/
-│           ├── page-home.php        ← Per-page static HTML templates
-│           ├── page-about.php
-│           └── ...
+│           ├── page-home.php        ← Per-page static HTML templates,
+│           ├── page-about-us.php       one file per converted page
+│           └── ...                     (named by pageSlug)
 ├── media/
 │   ├── image-1.jpg                  ← All downloaded media assets
 │   └── ...
@@ -51,7 +51,7 @@ Version: 1.0
 ```
 
 ### functions.php — stylesheet and JS enqueuing
-Every CSS/JS file is **registered** globally (`wp_register_style` / `wp_register_script`). Each page then **enqueues only the assets the original Scorpion page actually loaded**, in their original document order, looked up by the page's template slug. Per-page inline `<style>` blocks are written to `inline-<templateSlug>.css` and appended after the page's bundles so they cascade correctly.
+Every CSS/JS file is **registered** globally (`wp_register_style` / `wp_register_script`). Each page then **enqueues only the assets the original Scorpion page actually loaded**, in their original document order, looked up by the page's slug (path-derived, unique per page). Per-page inline `<style>` blocks are written to `inline-<pageSlug>.css` and appended after the page's bundles so they cascade correctly.
 
 ```php
 <?php
@@ -66,15 +66,21 @@ function scorpion_converted_register_assets() {
 }
 add_action('wp_enqueue_scripts', 'scorpion_converted_register_assets', 5);
 
-// Template slug → asset handles the original Scorpion page loaded, in order.
+// Page slug → asset handles the original Scorpion page loaded, in order.
+// One entry per converted page (post_type=page); blog post views use the
+// dominant blog template's exemplar page slug.
 function scorpion_converted_page_assets_map() {
     return array(
         'home' => array(
             'css' => array('scorpion-style-1', 'scorpion-style-2', 'scorpion-style-3'),
             'js'  => array('scorpion-script-1'),
         ),
-        'about' => array(
+        'about-us' => array(
             'css' => array('scorpion-style-1', 'scorpion-style-4'),
+            'js'  => array('scorpion-script-1'),
+        ),
+        'residential-plumbing-services-drain-lines-clogged-drains' => array(
+            'css' => array('scorpion-style-1', 'scorpion-style-5'),
             'js'  => array('scorpion-script-1'),
         ),
         // ...
@@ -82,10 +88,9 @@ function scorpion_converted_page_assets_map() {
 }
 
 function scorpion_converted_enqueue_page_assets() {
-    if (!is_page()) return;
-    $tpl = get_page_template_slug();
-    if (!preg_match('#templates/page-(.+)\.php$#', $tpl, $m)) return;
-    $slug = $m[1];
+    $slug = scorpion_converted_current_page_slug(); // parses pageSlug out
+                                                    // of the assigned template path
+    if ($slug === null) return;
     $map = scorpion_converted_page_assets_map();
     if (!isset($map[$slug])) return;
     foreach ($map[$slug]['css'] as $handle) wp_enqueue_style($handle);
@@ -97,7 +102,7 @@ add_action('wp_enqueue_scripts', 'scorpion_converted_enqueue_page_assets', 10);
 > **Important:** JS files are registered with `$in_footer = true` (last argument). This mirrors how Scorpion loads its utilities and prevents render-blocking. Pages that aren't WordPress pages (404, archive, etc.) skip the enqueue and render with no Scorpion assets — that's intentional, those routes aren't part of the original Scorpion site.
 
 ### Page templates
-Each converted page gets its own PHP template file. The static HTML from Scorpion is used as the template body, with `.cnt-stl` regions replaced by Classic block output.
+Each converted page gets its own PHP template file (`templates/page-<pageSlug>.php`) regardless of whether multiple pages share a Scorpion Template value. The static HTML from Scorpion is used as the template body, with content-zone regions replaced by `[scorpion_zone]` shortcode calls at their original DOM positions. One template per page preserves per-page banner imagery, side navigation, and any content zones that only appear on specific pages — a single shared template per Scorpion-template-value cannot.
 
 ```php
 <?php
@@ -189,7 +194,7 @@ The WXR file is consumed by WordPress's built-in importer (`Tools → Import →
   <wp:post_type>page</wp:post_type>
   <wp:status>publish</wp:status>
   <wp:post_name>about</wp:post_name>
-  <wp:page_template>templates/page-about.php</wp:page_template>
+  <wp:page_template>templates/page-about-us.php</wp:page_template>
   <!-- SEO metadata as postmeta -->
   <wp:postmeta>
     <wp:meta_key>_yoast_wpseo_title</wp:meta_key>

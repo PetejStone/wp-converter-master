@@ -8,11 +8,20 @@ export interface PageNode {
   // "/services/water/". This is the canonical key for `byPath`.
   path: string;
   // Slug derived from the Scorpion Template column (e.g. "system",
-  // "system-no-banner", "home", "parent"). Many pages share the same value
-  // — one PHP template per unique slug is emitted into theme/templates/.
-  // Empty Template values fall back to "generic". Used as the page's
-  // _wp_page_template assignment.
+  // "system-no-banner", "home", "parent"). Many pages share the same value.
+  // No longer used to share a PHP template across pages — each page gets
+  // its own template (see `pageSlug` below). Kept for single.php selection
+  // (the dominant blog-post template's chrome becomes single.php) and for
+  // future diagnostics.
   templateSlug: string;
+  // Per-page slug derived from the full URL path. Used as the page's
+  // `_wp_page_template` assignment and as the filename for the page's
+  // dedicated `templates/page-<pageSlug>.php`. Guaranteed unique within
+  // the hierarchy (collisions get `-1`, `-2` suffixes). Pages share a
+  // Scorpion Template value but still get their own PHP template file —
+  // banner, side nav, and any zones that exist only on specific pages
+  // need per-page DOM, not exemplar-frozen chrome.
+  pageSlug: string;
   // 1-based unique post_id. Parents are always assigned before children.
   postId: number;
   // WordPress post_name: last URL segment only (or "home" for "/").
@@ -57,6 +66,9 @@ export function buildPageHierarchy(pages: ScorpionPage[]): PageHierarchy {
   const byPath = new Map<string, PageNode>();
   const nodes: PageNode[] = [];
   const takenPostNameByParent = new Map<number, Set<string>>();
+  // Per-page slugs are filesystem identifiers — must be globally unique
+  // across the site, unlike post_name which is parent-scoped.
+  const takenPageSlugs = new Set<string>();
 
   for (const path of sortedPaths) {
     const page = realByPath.get(path)!;
@@ -89,10 +101,12 @@ export function buildPageHierarchy(pages: ScorpionPage[]): PageHierarchy {
     nameSet.add(postName);
 
     const templateSlug = templateValueToSlug(page.template);
+    const pageSlug = allocatePageSlug(path, takenPageSlugs);
 
     const node: PageNode = {
       path,
       templateSlug,
+      pageSlug,
       postId: nodes.length + 1,
       postName,
       parentPostId,
@@ -170,5 +184,31 @@ function sanitizeSlug(segment: string): string {
     .replace(/[^a-z0-9-]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+// Build a globally unique slug from the full path. Joins the path segments
+// with `-`, sanitizes, falls back to "home" for "/" and "page" for paths
+// that sanitize empty. Numeric suffix on collision so the slug set stays
+// 1:1 with hierarchy nodes.
+function allocatePageSlug(path: string, taken: Set<string>): string {
+  const trimmed = path.replace(/^\/+|\/+$/g, "");
+  let base = trimmed
+    ? trimmed
+        .toLowerCase()
+        .replace(/\//g, "-")
+        .replace(/[^a-z0-9-]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "")
+    : "home";
+  if (!base) base = "page";
+
+  let candidate = base;
+  let counter = 1;
+  while (taken.has(candidate)) {
+    candidate = `${base}-${counter}`;
+    counter++;
+  }
+  taken.add(candidate);
+  return candidate;
 }
 

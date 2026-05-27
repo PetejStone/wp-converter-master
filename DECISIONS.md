@@ -80,16 +80,18 @@ This supersedes the prior stance that "USC version is informational only" — it
 
 ## Per-page asset enqueuing
 
-**Decision:** Every CSS/JS file is registered globally via `wp_register_*`; each page enqueues only the assets the original Scorpion page actually loaded, in original document order, keyed by the page's template slug. Per-page inline `<style>` blocks are written to `inline-<templateSlug>.css` and appended after the page's bundles.
+**Decision:** Every CSS/JS file is registered globally via `wp_register_*`; each page enqueues only the assets the original Scorpion page actually loaded, in original document order, keyed by the page's slug (path-derived, unique per page). Per-page inline `<style>` blocks are written to `inline-<pageSlug>.css` and appended after the page's bundles. Blog post views (`single.php`) reuse the dominant blog template's exemplar page-slug bundle.
 
 **Rejected:** Continuing to enqueue every asset on every page (the original decision above).
 
 **Why:**
 - The crawler records per-page `stylesheetUrls` / `scriptUrls` / `inlineStyles` — the data was already there, just being collapsed during aggregation. No DOM heuristics or page-type detection required.
 - Loading only what each page used materially reduces request count and bytes-on-wire per pageview, fixing observable performance on converted sites.
-- Template slug is a stable, post-import-survivable lookup key (it's encoded in `_wp_page_template` and read via `get_page_template_slug()`), so the map survives re-imports and content edits.
+- Page slug is a stable, post-import-survivable lookup key (it's encoded in `_wp_page_template` and read via `get_page_template_slug()`), so the map survives re-imports and content edits.
 - Original document load order is preserved per page, so cascade-sensitive bundles still resolve correctly.
 - Visual accuracy is unaffected — each page loads exactly the assets the original Scorpion page loaded, no more, no less.
+
+> Earlier this map was keyed by Scorpion template slug (one bundle shared across every page assigned that Scorpion template). That assumed page templates were also shared per Scorpion template value; see the *Page templates* decision below for why that consolidation was reverted. The asset map followed the page-template change back to per-page keying.
 
 ---
 
@@ -153,14 +155,21 @@ This supersedes the prior stance that "USC version is informational only" — it
 
 ## Page templates: One per page vs. shared templates with overrides
 
-**Decision:** Every page gets its own generated WordPress template regardless of whether pages share a Scorpion template.
+**Decision:** Every page gets its own generated WordPress template (`templates/page-<pageSlug>.php`) regardless of whether pages share a Scorpion template value.
 
-**Rejected:** Detecting shared templates, generating one template per template type, and handling page-specific panel overrides on top.
+**Rejected:** Detecting shared templates, generating one template per Scorpion template value, and handling page-specific panel overrides on top.
 
 **Why:**
-- Page-specific panel overrides in Scorpion's CMS mean pages sharing a template can have meaningfully different content zones — skipping pages based on template sharing risks missing these overrides
-- One template per page is simpler to implement, completely predictable, and guarantees accuracy
-- The added storage cost of extra template files is negligible
+- Page-specific panel overrides in Scorpion's CMS mean pages sharing a Scorpion template value can have meaningfully different content zones, banner imagery, and side navigation — none of these can be retrofitted onto a shared exemplar template without losing visual accuracy.
+- One template per page is simpler to implement, completely predictable, and guarantees accuracy.
+- The added storage cost of extra template files is negligible.
+
+> **Briefly reconsidered, then reverted.** A shared-template-per-Scorpion-template-value variant was tried (lowest-postId page in each group provided the exemplar HTML; sister pages inherited its chrome). A DOM-diff layer attempted to parameterize per-page divergences (banner, sidebar) via a `[scorpion_region]` shortcode. Two failure modes pushed the revert:
+>
+> 1. **Banner / sidebar divergences bubbled up to whole-body diffs** whenever the body's `class` attribute differed per page (very common). The diff couldn't represent that without engulfing the entire body, so per-page chrome silently fell back to the exemplar.
+> 2. **Content zones unique to sister pages had nowhere to render.** The exemplar's template only emitted `[scorpion_zone]` calls for the zones the exemplar's DOM contained. Pages with additional zones (e.g. `/residential-plumbing-services/drain-lines/clogged-drains/` had `ContentS11Content` and `ContentS11Expanded` that the exemplar `/kingsport-plumbing-services/` did not) had the zone data written to postmeta but no shortcode call to surface it.
+>
+> Per-page templates sidestep both: each page's DOM becomes its own PHP file, so per-page chrome and per-page zone wrappers are preserved without any diff/inheritance machinery.
 
 ---
 

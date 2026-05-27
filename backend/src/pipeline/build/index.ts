@@ -164,33 +164,21 @@ export async function buildWpPackage(
   }
 
   // Build the hierarchy now so per-page inline CSS files can be named after
-  // each page's templateSlug — that's the same key the enqueue logic uses
+  // each page's pageSlug — that's the same key the enqueue logic uses
   // at request time.
   const pageTitleByPath = new Map(
     inputs.ingest.pages.map((p) => [p.path, p.title]),
   );
   const hierarchy = buildPageHierarchy(inputs.ingest.pages);
 
-  // Many pages share a templateSlug now (one per unique Scorpion Template
-  // value). Pick the lowest-postId non-blog page in each group as the
-  // exemplar — its inline styles and asset deps become the template's.
-  const exemplarByTemplateSlug = new Map<string, typeof hierarchy.nodes[0]>();
+  // Per-page inline <style> blocks: one inline-<pageSlug>.css file per
+  // page that has any. Each page's PHP template enqueues its own file, so
+  // pages don't pick up other pages' tokens. Blog posts are excluded —
+  // single.php uses the dominant blog template's inline CSS.
+  const inlineFilenameByPageSlug = new Map<string, string>();
   for (const node of hierarchy.nodes) {
     if (node.isBlogPost) continue;
-    const existing = exemplarByTemplateSlug.get(node.templateSlug);
-    if (!existing || node.postId < existing.postId) {
-      exemplarByTemplateSlug.set(node.templateSlug, node);
-    }
-  }
-
-  // Per-template inline <style> blocks are written to inline-<slug>.css
-  // so each template only loads its exemplar's tokens. Pages in the same
-  // group inherit those (the alternative — generate per-page inline CSS —
-  // would defeat the consolidation goal).
-  const inlineFilenameBySlug = new Map<string, string>();
-  for (const [slug, node] of exemplarByTemplateSlug) {
-    const path = node.page.path;
-    const indices = inputs.assets.pageInlineStyleIndices.get(path) ?? [];
+    const indices = inputs.assets.pageInlineStyleIndices.get(node.page.path) ?? [];
     if (indices.length === 0) continue;
     const inlineCss = indices
       .map((idx, i) => {
@@ -199,9 +187,55 @@ export async function buildWpPackage(
       })
       .join("\n\n");
     const rewritten = rewriteCssUrls(inlineCss, inputs.siteUrl, urlMap);
-    const filename = `inline-${slug}.css`;
+    const filename = `inline-${node.pageSlug}.css`;
     await writeFile(join(cssDir, filename), rewritten);
-    inlineFilenameBySlug.set(slug, filename);
+    inlineFilenameByPageSlug.set(node.pageSlug, filename);
+  }
+
+  // Blog posts share a single inline-<templateSlug>.css matching single.php's
+  // chrome (picked further down). Aggregate the dominant blog template's
+  // exemplar inline styles here so the file is on disk before functions.php
+  // wires it up.
+  const blogTemplateCounts = new Map<string, number>();
+  for (const node of hierarchy.nodes) {
+    if (!node.isBlogPost) continue;
+    blogTemplateCounts.set(
+      node.templateSlug,
+      (blogTemplateCounts.get(node.templateSlug) ?? 0) + 1,
+    );
+  }
+  let dominantBlogTemplateSlug: string | null = null;
+  let bestBlogCount = 0;
+  for (const [slug, count] of blogTemplateCounts) {
+    if (count > bestBlogCount) {
+      bestBlogCount = count;
+      dominantBlogTemplateSlug = slug;
+    }
+  }
+  let blogExemplarPageSlug: string | null = null;
+  if (dominantBlogTemplateSlug) {
+    let exemplar: typeof hierarchy.nodes[number] | null = null;
+    for (const node of hierarchy.nodes) {
+      if (!node.isBlogPost) continue;
+      if (node.templateSlug !== dominantBlogTemplateSlug) continue;
+      if (!exemplar || node.postId < exemplar.postId) exemplar = node;
+    }
+    if (exemplar) {
+      blogExemplarPageSlug = exemplar.pageSlug;
+      const indices = inputs.assets.pageInlineStyleIndices.get(exemplar.page.path) ?? [];
+      if (indices.length > 0 && !inlineFilenameByPageSlug.has(exemplar.pageSlug)) {
+        const inlineCss = indices
+          .map((idx, i) => {
+            const block = inputs.assets.inlineStyles[idx] ?? "";
+            return `/* === inline block ${i + 1} === */\n${block}`;
+          })
+          .join("\n\n");
+        const rewritten = rewriteCssUrls(inlineCss, inputs.siteUrl, urlMap);
+        const filename = `inline-${exemplar.pageSlug}.css`;
+        await writeFile(join(cssDir, filename), rewritten);
+        inlineFilenameByPageSlug.set(exemplar.pageSlug, filename);
+      }
+    }
   }
 
   // CF7 layout + label/sizing overrides for the .ui-contact-form panel.
@@ -217,9 +251,9 @@ export async function buildWpPackage(
   for (const r of cssOutcome.results) {
     if (r.status === "ok" && r.filename) cssFilenames.push(r.filename);
   }
-  // Per-template inline CSS files are part of the registered stylesheet
+  // Per-page inline CSS files are part of the registered stylesheet
   // handle set so the enqueue logic can reference them.
-  for (const filename of inlineFilenameBySlug.values()) {
+  for (const filename of inlineFilenameByPageSlug.values()) {
     cssFilenames.push(filename);
   }
   cssFilenames.push(cf7OverridesFilename);
@@ -232,19 +266,19 @@ export async function buildWpPackage(
     jsFilenames.push(r.filename);
   }
 
-  // Slug → ordered list of CSS / JS filenames the exemplar's Scorpion
-  // page loaded, in document order. Per-template inline file goes FIRST so
+  // pageSlug → ordered list of CSS / JS filenames each Scorpion page
+  // loaded, in document order. The page's own inline file goes FIRST so
   // the downloaded bundles cascade over it (matches the original site
   // where <style> blocks live in <head> and the main bundle renders into
   // <body>, making the bundle authoritative on any selector they both
   // touch — reversing causes :root token fights).
-  const cssFilenamesByTemplateSlug = new Map<string, string[]>();
-  const jsFilenamesByTemplateSlug = new Map<string, string[]>();
-  for (const [slug, node] of exemplarByTemplateSlug) {
+  const cssFilenamesByPageSlug = new Map<string, string[]>();
+  const jsFilenamesByPageSlug = new Map<string, string[]>();
+  const buildAssetsForNode = (node: typeof hierarchy.nodes[number]) => {
     const path = node.page.path;
 
     const cssForPage: string[] = [];
-    const inlineFile = inlineFilenameBySlug.get(slug);
+    const inlineFile = inlineFilenameByPageSlug.get(node.pageSlug);
     if (inlineFile) cssForPage.push(inlineFile);
     const cssUrls = inputs.assets.pageStylesheets.get(path) ?? [];
     for (const url of cssUrls) {
@@ -253,7 +287,7 @@ export async function buildWpPackage(
     }
     // CF7 overrides go last so they win on equal-specificity selectors.
     cssForPage.push(cf7OverridesFilename);
-    cssFilenamesByTemplateSlug.set(slug, cssForPage);
+    cssFilenamesByPageSlug.set(node.pageSlug, cssForPage);
 
     const jsUrls = inputs.assets.pageScripts.get(path) ?? [];
     const jsForPage: string[] = [];
@@ -261,32 +295,27 @@ export async function buildWpPackage(
       const filename = jsFilenameByUrl.get(url);
       if (filename) jsForPage.push(filename);
     }
-    jsFilenamesByTemplateSlug.set(slug, jsForPage);
+    jsFilenamesByPageSlug.set(node.pageSlug, jsForPage);
+  };
+
+  for (const node of hierarchy.nodes) {
+    if (node.isBlogPost) continue;
+    buildAssetsForNode(node);
+  }
+  // Blog exemplar's asset bundle drives single.php (blog posts share one
+  // template). Add it under its own pageSlug so the runtime enqueue map
+  // resolves it — without this, post views render with no Scorpion CSS/JS.
+  if (blogExemplarPageSlug) {
+    const exemplarNode = hierarchy.nodes.find(
+      (n) => n.isBlogPost && n.pageSlug === blogExemplarPageSlug,
+    );
+    if (exemplarNode) buildAssetsForNode(exemplarNode);
   }
 
   await writeFile(
     join(themeDir, "style.css"),
     buildStyleCss(inputs.siteTitle),
   );
-  // Pick the dominant Scorpion template among blog posts — single.php
-  // uses that template's chrome + asset bundle. Falls back to null when
-  // the site has no blog posts.
-  const blogTemplateCounts = new Map<string, number>();
-  for (const node of hierarchy.nodes) {
-    if (!node.isBlogPost) continue;
-    blogTemplateCounts.set(
-      node.templateSlug,
-      (blogTemplateCounts.get(node.templateSlug) ?? 0) + 1,
-    );
-  }
-  let postTemplateSlug: string | null = null;
-  let bestCount = 0;
-  for (const [slug, count] of blogTemplateCounts) {
-    if (count > bestCount) {
-      bestCount = count;
-      postTemplateSlug = slug;
-    }
-  }
 
   await writeFile(
     join(themeDir, "functions.php"),
@@ -295,10 +324,12 @@ export async function buildWpPackage(
       cssFilenames,
       jsFilenames,
       perPage: {
-        cssFilenamesByTemplateSlug,
-        jsFilenamesByTemplateSlug,
+        cssFilenamesByPageSlug,
+        jsFilenamesByPageSlug,
       },
-      postTemplateSlug,
+      // single.php uses the dominant blog template's exemplar page-slug
+      // for its asset bundle. null when the site has no blog posts.
+      postPageSlug: blogExemplarPageSlug,
     }),
   );
 
