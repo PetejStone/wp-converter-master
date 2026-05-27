@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CrawlResult } from "../crawl";
 import {
@@ -22,6 +22,7 @@ import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
 import { buildPageTemplates, buildSinglePostTemplate } from "./templates";
 import {
   buildFunctionsPhp,
+  buildHtaccessAdditions,
   buildIndexPhp,
   buildStyleCss,
   THEME_SLUG,
@@ -393,6 +394,11 @@ export async function buildWpPackage(
   });
   await writeFile(join(outputDir, "import.xml"), wxr);
 
+  await writeFile(
+    join(outputDir, "htaccess-additions.txt"),
+    buildHtaccessAdditions(),
+  );
+
   const totalZones = inputs.contentZones.reduce(
     (n, p) => n + p.zones.length,
     0,
@@ -414,6 +420,23 @@ export async function buildWpPackage(
       ).length,
       knownLimitations: limitations,
     }),
+  );
+
+  // Duplicate every JS file into `common/usc/p/` at the export root so
+  // the SFTP'd directory tree resolves Scorpion's `/common/usc/p/<name>.js`
+  // requests as static files at the WP root. This bypasses the theme's
+  // `init`-hook intercept entirely, which is required on hosts (GoDaddy
+  // Managed WordPress) that 404 unknown static-file paths at the edge
+  // before WordPress boots. The files are byte-for-byte copies of what
+  // already lives in theme/scorpion-converted/js/ — kilobytes of dup, no
+  // host-level rewrites needed.
+  const commonUscPDir = join(outputDir, "common", "usc", "p");
+  await mkdir(commonUscPDir, { recursive: true });
+  const jsFiles = (await readdir(jsDir)).filter((f) =>
+    f.toLowerCase().endsWith(".js"),
+  );
+  await Promise.all(
+    jsFiles.map((f) => copyFile(join(jsDir, f), join(commonUscPDir, f))),
   );
 
   const zipPath = join(inputs.jobRootDir, "export.zip");

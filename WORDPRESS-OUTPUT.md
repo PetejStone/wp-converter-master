@@ -29,7 +29,11 @@ export.zip
 ├── media/
 │   ├── image-1.jpg                  ← All downloaded media assets
 │   └── ...
+├── common/usc/p/                    ← JS duplicated here so /common/usc/p/<name>.js
+│   ├── utility-1.js                   resolves as a static file on hosts that 404
+│   └── ...                            unknown paths before reaching PHP
 ├── import.xml                       ← WXR file for WordPress importer
+├── htaccess-additions.txt           ← Apache rewrite snippet (alternative for Apache hosts)
 └── MIGRATION-CHECKLIST.md           ← Post-import steps for the user
 ```
 

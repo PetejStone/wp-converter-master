@@ -23,6 +23,32 @@ export interface ThemeInputs {
   postTemplateSlug: string | null;
 }
 
+// Apache rewrite snippet that ships alongside the export. The theme's
+// `init`-hook intercept for `/common/usc/p/<name>.{js,css,html}` only
+// works on hosts that route static-file-shaped requests through PHP.
+// Edge-cached hosts (GoDaddy Managed WordPress is the known case) 404
+// these requests at the gateway before WP boots. Merging this snippet
+// into the WP root .htaccess rewrites the request to the theme path
+// before the gateway's static-file 404, bypassing the intercept entirely.
+export function buildHtaccessAdditions(): string {
+  return `# Scorpion CMS → WordPress conversion — .htaccess additions
+#
+# Paste the <IfModule> block below into your WordPress root .htaccess,
+# ABOVE the "# BEGIN WordPress" marker. This rewrites Scorpion's runtime
+# /common/usc/p/<name>.{js,css,html} requests to the converted theme so
+# they resolve on hosts that 404 unknown static paths at the edge before
+# the request reaches PHP (e.g. GoDaddy Managed WordPress).
+#
+# Safe to skip on hosts where /common/usc/p/<name>.js already returns
+# 200 — the theme's functions.php intercept handles those automatically.
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^common/usc/p/(.+\\.(?:js|css|html))$ /wp-content/themes/${THEME_SLUG}/js/$1 [L]
+</IfModule>
+`;
+}
+
 export function buildStyleCss(siteTitle: string): string {
   const safeTitle = escapeCssComment(siteTitle);
   return `/*
