@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import type { PageContentZones } from "../parse";
+import { TESTIMONIAL_PANEL_COMMENT_RE, type PageContentZones } from "../parse";
 import {
   normalizePath,
   templateValueToDisplayName,
@@ -344,6 +344,13 @@ function buildPageTemplate(
   html = html.replace(/<\/head>/i, "<?php wp_head(); ?>\n</head>");
   html = html.replace(/<\/body>/i, "<?php wp_footer(); ?>\n</body>");
 
+  // Substitute testimonial-panel placeholders that live OUTSIDE content
+  // zones (they survived from injectTestimonialPanelPlaceholders into
+  // page.template). Placeholders inside content zones are handled in
+  // wxr.ts during postmeta emission, since those travel via postmeta
+  // not the template.
+  html = substituteTestimonialPanels(html, true);
+
   // Replace each WP_CLASSIC_BLOCK_<index> placeholder with either a
   // per-zone shortcode call (default — zone HTML lives in postmeta
   // `_scorpion_zone_<id>`, emitted by the WXR builder; the shortcode
@@ -358,6 +365,12 @@ function buildPageTemplate(
       innerHtml = substituteSvgIcons(innerHtml, iconMap);
       innerHtml = stripBlockedDomainContent(innerHtml);
       innerHtml = stripScorpionLinks(innerHtml);
+      // Inline-zone path lives in a real PHP file (404.php / 500.php) so
+      // emit the PHP do_shortcode wrapper. Same as the page-template
+      // substitution below — different from the postmeta path in wxr.ts,
+      // which emits a bare shortcode tag for the scorpion_zone handler
+      // to resolve via its own do_shortcode call.
+      innerHtml = substituteTestimonialPanels(innerHtml, true);
       return innerHtml;
     }
     const safeId = sanitizeZoneId(zone.zoneId);
@@ -378,6 +391,25 @@ function buildPageTemplate(
     templateName,
     content: bootstrap + header + html,
   };
+}
+
+// Replace every `<!-- WP_TESTIMONIAL_PANEL ids="…" -->` placeholder
+// with the rendered shortcode form. `inPhp=true` wraps the shortcode
+// in a `<?php echo do_shortcode(...); ?>` call for use inside a real
+// PHP template file; `inPhp=false` emits the bare `[scorpion_testimonials …]`
+// tag for use inside postmeta strings (the scorpion_zone shortcode
+// handler runs do_shortcode on its output so nested shortcodes resolve).
+export function substituteTestimonialPanels(
+  html: string,
+  inPhp: boolean,
+): string {
+  return html.replace(TESTIMONIAL_PANEL_COMMENT_RE, (_match, idsRaw: string) => {
+    const ids = idsRaw.replace(/\s+/g, "");
+    if (inPhp) {
+      return `<?php echo do_shortcode('[scorpion_testimonials ids="${ids}"]'); ?>`;
+    }
+    return `[scorpion_testimonials ids="${ids}"]`;
+  });
 }
 
 function escapePhpComment(value: string): string {

@@ -10,6 +10,7 @@ import {
   collectAssets,
   collectMedia,
   extractAllContentZones,
+  injectTestimonialPanelPlaceholders,
 } from "../pipeline/parse";
 
 async function main() {
@@ -57,6 +58,15 @@ async function main() {
     }
 
     console.log(`\nExtracting content zones from ${okPages.length} OK pages…`);
+    const testimonialPanels = injectTestimonialPanelPlaceholders(
+      crawl,
+      ingest.testimonials,
+    );
+    if (testimonialPanels.length > 0) {
+      console.log(
+        `  testimonial panels detected: ${testimonialPanels.length} (across ${new Set(testimonialPanels.map((p) => p.pagePath)).size} pages)`,
+      );
+    }
     const extracted = extractAllContentZones(crawl, ingest.contentZoneIds);
 
     const totalZones = extracted.reduce((n, p) => n + p.zones.length, 0);

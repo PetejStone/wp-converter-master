@@ -17,6 +17,8 @@ import type {
 } from "../parse";
 import { buildCf7Forms, type Cf7Form } from "./cf7-forms";
 import { buildMigrationChecklist } from "./checklist";
+import { buildCptUiExport } from "./cpt-ui-export";
+import { TESTIMONIAL_METABOX } from "./cpts/testimonials";
 import { buildPageHierarchy } from "./hierarchy";
 import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
 import {
@@ -47,6 +49,11 @@ export interface BuildInputs {
   contentZones: PageContentZones[];
   formAnalysis: FormAnalysis;
   navAnalysis: NavAnalysis;
+  // How many testimonial panels the parse-time detector replaced with
+  // shortcode placeholders. Surfaced in the migration checklist so
+  // admins can sanity-check that the CPT-driven panels match what the
+  // original site rendered. Optional — older callers pass undefined.
+  testimonialPanelCount?: number;
 }
 
 export interface BuildStats {
@@ -381,6 +388,10 @@ export async function buildWpPackage(
       // single.php uses the dominant blog template's exemplar page-slug
       // for its asset bundle. null when the site has no blog posts.
       postPageSlug: blogExemplarPageSlug,
+      // Purpose-built admin metaboxes for each Scorpion-system CPT. The
+      // schema in cpts/<system>.ts drives both the metabox PHP and the
+      // matching WXR postmeta emission in wxr.ts.
+      cptMetaboxes: [TESTIMONIAL_METABOX],
     }),
   );
 
@@ -478,6 +489,10 @@ export async function buildWpPackage(
     await writeFile(join(themeDir, t.filename), t.content);
   }
 
+  // Testimonials: post_ids start after CF7 forms so nothing collides with
+  // pages / nav items / CF7 entries already allocated above.
+  const testimonialBasePostId = cf7BasePostId + cf7Forms.length;
+
   const wxr = buildWxrXml({
     siteUrl: inputs.siteUrl,
     siteTitle: inputs.siteTitle,
@@ -489,12 +504,25 @@ export async function buildWpPackage(
     cf7Forms,
     blogCategories: inputs.ingest.blogCategories,
     blogEntries: inputs.ingest.blogEntries,
+    testimonials: inputs.ingest.testimonials,
+    testimonialBasePostId,
   });
   await writeFile(join(outputDir, "import.xml"), wxr);
 
   await writeFile(
     join(outputDir, "htaccess-additions.txt"),
     buildHtaccessAdditions(),
+  );
+
+  // CPT UI plugin import file. The wp:import script auto-installs the
+  // plugin and imports this JSON so the converted site has the right
+  // post types registered the moment the import finishes. Always
+  // emitted (even if no testimonials were found) — keeps the wp:import
+  // step deterministic and gives admins a starting schema if they later
+  // add testimonials by hand.
+  await writeFile(
+    join(outputDir, "cptui-export.json"),
+    JSON.stringify(buildCptUiExport(), null, 2) + "\n",
   );
 
   const totalZones = inputs.contentZones.reduce(
@@ -516,6 +544,8 @@ export async function buildWpPackage(
       blogPostCount: inputs.ingest.blogEntries.filter(
         (e) => e.categoryIds.length > 0,
       ).length,
+      testimonialCount: inputs.ingest.testimonials.length,
+      testimonialPanelCount: inputs.testimonialPanelCount ?? 0,
       knownLimitations: limitations,
     }),
   );

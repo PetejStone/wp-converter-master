@@ -14,6 +14,7 @@ export async function ingestWpConverter(
     redirects,
     blogCategories,
     blogEntries,
+    testimonials,
   } = parseWpConverter(html, normalized);
   return {
     siteUrl: normalized,
@@ -23,6 +24,7 @@ export async function ingestWpConverter(
     redirects,
     blogCategories,
     blogEntries,
+    testimonials,
   };
 }
 
@@ -32,6 +34,7 @@ export type {
   IngestResult,
   ScorpionPage,
   SiteRedirect,
+  Testimonial,
 } from "./types";
 export type { IngestFetchCategory } from "./errors";
 export { IngestError, IngestFetchError, IngestParseError } from "./errors";

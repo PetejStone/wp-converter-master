@@ -1,3 +1,5 @@
+import { buildCptMetaboxPhp, type CptMetaboxSpec } from "./cpt-metabox";
+
 export const THEME_SLUG = "scorpion-converted";
 
 export interface PerPageAssets {
@@ -23,6 +25,11 @@ export interface ThemeInputs {
   // null when the site has no blog posts (post enqueue branch becomes a
   // no-op).
   postPageSlug: string | null;
+  // Purpose-built admin metabox for each Scorpion-system CPT. Each spec
+  // generates a labeled-input metabox registered against that CPT's
+  // post type (see cpt-metabox.ts / cpts/<system>.ts). Empty array
+  // means no system CPTs were emitted.
+  cptMetaboxes: CptMetaboxSpec[];
 }
 
 // Apache rewrite snippet that ships alongside the export. The theme's
@@ -101,6 +108,14 @@ export function buildFunctionsPhp(inputs: ThemeInputs): string {
   const postSlugPhp = inputs.postPageSlug
     ? `'${escapePhp(inputs.postPageSlug)}'`
     : "null";
+
+  // Purpose-built metabox PHP for each Scorpion-system CPT. Generated from
+  // the per-system schema in cpts/<system>.ts so the WXR postmeta emission
+  // and admin-side editability are driven by the same source of truth.
+  const cptMetaboxesPhp =
+    inputs.cptMetaboxes.length > 0
+      ? "\n" + inputs.cptMetaboxes.map(buildCptMetaboxPhp).join("\n")
+      : "";
 
   return `<?php
 /**
@@ -288,9 +303,116 @@ function scorpion_zone_shortcode($atts) {
         return '';
     }
     $value = get_post_meta(get_the_ID(), '_scorpion_zone_' . $id, true);
-    return is_string($value) ? $value : '';
+    if (!is_string($value)) {
+        return '';
+    }
+    // Resolve nested shortcodes inside the zone HTML — for example
+    // [scorpion_testimonials ids="…"] when a testimonial panel lived
+    // inside a content zone. WP's default rendering does NOT recurse
+    // into shortcode output strings, so without this the nested tag
+    // would render as literal text.
+    return do_shortcode($value);
 }
 add_shortcode('scorpion_zone', 'scorpion_zone_shortcode');
+
+/**
+ * [scorpion_testimonials ids="…"] — renders testimonial cards inside a
+ * page's testimonial panel. Each Scorpion testimonial lives as a
+ * scorpion_testimonial CPT entry; the build pipeline replaces the
+ * original panel's <li data-key="…"> children with this shortcode and
+ * encodes the curated ID list as a comma-separated 'ids' attribute so
+ * each panel renders only the testimonials Scorpion was showing there.
+ *
+ * The wrapping element (typically <ul> with Scorpion's layout classes)
+ * is preserved by the build step, so this shortcode only emits the
+ * inner <li> markup — the existing Scorpion CSS picks up the rest.
+ *
+ * ids="" (or attribute omitted) → render every testimonial in
+ * menu_order/title order. Useful for a dedicated "All Testimonials"
+ * page admins can build manually post-import.
+ */
+function scorpion_testimonials_shortcode($atts) {
+    $atts = shortcode_atts(array('ids' => ''), $atts, 'scorpion_testimonials');
+    $idsAttr = trim((string) $atts['ids']);
+    $ids = array();
+    if ($idsAttr !== '') {
+        foreach (explode(',', $idsAttr) as $raw) {
+            $clean = trim($raw);
+            if ($clean !== '') $ids[] = $clean;
+        }
+    }
+
+    $query_args = array(
+        'post_type' => 'scorpion_testimonial',
+        'post_status' => 'publish',
+        'posts_per_page' => -1,
+        'orderby' => 'menu_order title',
+        'order' => 'ASC',
+        'no_found_rows' => true,
+    );
+    if (!empty($ids)) {
+        $query_args['meta_query'] = array(array(
+            'key' => '_testimonial_scorpion_id',
+            'value' => $ids,
+            'compare' => 'IN',
+        ));
+    }
+
+    $query = new WP_Query($query_args);
+    if (!$query->have_posts()) {
+        return '';
+    }
+
+    // Build a lookup so we can render in the exact ids order the build
+    // step recorded (preserves Scorpion's per-panel curation). When the
+    // attribute is empty we render in query order instead.
+    $by_id = array();
+    $natural_order = array();
+    while ($query->have_posts()) {
+        $query->the_post();
+        $post_id = get_the_ID();
+        $sid = get_post_meta($post_id, '_testimonial_scorpion_id', true);
+        if (!is_string($sid) || $sid === '') {
+            // Defensive: a manually-added testimonial without the meta
+            // key would otherwise be skipped silently. Fall back to the
+            // post slug so it still renders if the admin matches the
+            // stable post_name pattern (testimonial-<id>).
+            $sid = preg_replace('/^testimonial-/', '', get_post_field('post_name', $post_id));
+        }
+        $natural_order[] = $sid;
+        // Caption + body live in postmeta (see cpts/testimonials.ts) so
+        // admins edit every field through the purpose-built metabox; this
+        // shortcode reads from the same keys the metabox saves to.
+        $caption = get_post_meta($post_id, '_testimonial_caption', true);
+        $body = get_post_meta($post_id, '_testimonial_body', true);
+        $by_id[$sid] = array(
+            'caption' => is_string($caption) ? $caption : '',
+            'body' => is_string($body) ? $body : '',
+            'author' => get_post_meta($post_id, '_testimonial_author', true),
+        );
+    }
+    wp_reset_postdata();
+
+    $order = !empty($ids) ? $ids : $natural_order;
+    $html = '';
+    foreach ($order as $sid) {
+        if (!isset($by_id[$sid])) continue;
+        $t = $by_id[$sid];
+        // Prefer the caption (short version) for panel display — that's
+        // what Scorpion's slider/grid layouts use. Fall back to the
+        // full body when no excerpt was provided.
+        $copy = $t['caption'] !== '' ? $t['caption'] : wp_strip_all_tags($t['body']);
+        $html .= '<li class="flx third bg-bx ulk-bg bdr-rds" data-role="item" data-item="i" data-key="' . esc_attr($sid) . '">';
+        $html .= '<blockquote class="ato flx f_clm f_c pd_h pd_v">';
+        $html .= '<p class="testimonial-body">' . esc_html($copy) . '</p>';
+        if ($t['author'] !== '') {
+            $html .= '<cite class="testimonial-author">' . esc_html($t['author']) . '</cite>';
+        }
+        $html .= '</blockquote></li>';
+    }
+    return $html;
+}
+add_shortcode('scorpion_testimonials', 'scorpion_testimonials_shortcode');
 
 /**
  * "Scorpion Zones" admin metabox — surfaces every '_scorpion_zone_<id>'
@@ -425,7 +547,7 @@ function scorpion_converted_save_zones($post_id) {
     }
 }
 add_action('save_post_page', 'scorpion_converted_save_zones');
-`;
+${cptMetaboxesPhp}`;
 }
 
 export function buildIndexPhp(): string {

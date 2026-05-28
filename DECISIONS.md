@@ -173,6 +173,60 @@ This supersedes the prior stance that "USC version is informational only" — it
 
 ---
 
+## Scorpion systems → WordPress Custom Post Types
+
+**Decision:** Structured Scorpion systems (testimonials first, then locations, team, services, FAQs, etc.) are migrated as WordPress Custom Post Types. Each system gets:
+1. A dedicated `/wp-converter/` table publishing the rows (e.g. `#TestimonialTable`).
+2. Auto-installed Custom Post Type UI (via the existing `wp:import` script) plus an auto-imported `cptui-export.json` shaped for the plugin.
+3. Captured panel HTML on each rendered page replaced at build time with a `[scorpion_<system>s ids="…"]` shortcode call that queries the CPT.
+4. WXR `<item>` entries (`post_type=scorpion_<system>`) with `post_name=<system>-<ScorpionID>` for idempotency on re-import.
+
+**Rejected:** Treating Scorpion systems as opaque static HTML (the previous behavior — testimonial markup got baked into per-page PHP templates, so admins couldn't add testimonials without editing PHP).
+
+**Rejected:** Hand-curated CSS selectors per system (e.g. `.testimonial-card`). Fragile to Scorpion markup changes and requires Scorpion-team-side maintenance — violates the project's stated "minimal ongoing maintenance" principle in CLAUDE.md.
+
+**Why:**
+- Scorpion's rendered HTML carries a stable `data-key="<ScorpionID>"` attribute on every system-rendered element (verified on `tennesseeplumbinginc.com`: testimonial cards, services, and what appear to be locations all expose `data-key` with distinct numeric ranges). The same `data-key` joins to the row's first cell in each `#…Table`. This is an authoritative, markup-shape-independent join key.
+- The `/wp-converter/` endpoint already exists and is the canonical source for site-specific structured data — adding more tables there matches the existing ingest pattern (`#SiteMapListTable`, `#SiteContentIdsTable`, etc.) and requires no new plumbing on the conversion-tool side.
+- Auto-installing CPT UI via `wp:import` matches the established pattern for CF7/Flamingo/Complianz, so admins get one-command setup AND an admin UI to reshape the CPT later if needed.
+- Shortcode-driven rendering means admins can add/edit/remove CPT entries in WP admin and the panels update without re-running the converter — meeting the user's stated priority of "ease of setup" while still being editable post-import.
+
+**How extraction works:**
+- The crawler captures the rendered HTML of every page (already done).
+- A new parse pass scans each page for `[data-key]` elements whose value appears in the system's table (e.g. `#TestimonialTable`). Matches are grouped by smallest common DOM ancestor → that ancestor is the panel root.
+- A sanity check confirms the matched element's text contains the row's text content (Caption or body), falling back from full match to prefix where needed.
+- At template build time, the panel root's inner HTML is replaced with the shortcode call. The wrapping element (`<ul>`, `<section>`, etc.) and its classes are preserved so Scorpion's CSS continues to style the panel.
+
+**Architecture note for future CPTs:**
+- File layout designed for plug-in extension: each system gets its own `pipeline/parse/cpts/<system>.ts` (panel detection) and `pipeline/build/cpts/<system>.ts` (CPT UI JSON shape + shortcode markup). A registry binds them so adding Locations (or any later system) is a matter of dropping in two files plus a `/wp-converter/` table, not editing core pipeline code.
+- The `data-key` join key is consistent across Scorpion's systems, so the panel-detection algorithm is generic — only the table schema and CPT shape are per-system.
+
+---
+
+## CPT field editability: Custom metabox per system vs. generic Custom Fields panel vs. ACF
+
+**Decision:** Every Scorpion-system CPT ships a **purpose-built metabox** registered in the converted theme's `functions.php`. The metabox renders each CPT-specific field (Author, Review Date, Scorpion ID, etc.) as a labeled input with the correct HTML5 input type (`text`, `date`, `number`, etc.). The Scorpion-side join key (e.g. `_testimonial_scorpion_id`) is rendered **read-only** because it's the idempotency key for re-imports and must not drift. The stock "Custom Fields" panel is hidden for these post types so admins are never confronted with the raw key/value editor.
+
+This is the **standard** for every system CPT going forward — testimonials first, then locations, team, services, FAQs, etc. Adding a new system means defining its field schema (key → label + input type + read-only flag) and the metabox renderer/saver follow from that schema.
+
+**Rejected:** Relying on WP's stock "Custom Fields" metabox (enabled by adding `custom-fields` to `supports`). It's hidden by default in modern WP, presents fields as a raw key/value table with no labels, applies no input-type validation, and exposes internal meta keys (leading underscores, snake_case) to non-technical admins.
+
+**Rejected:** Auto-installing Advanced Custom Fields (ACF) and shipping an ACF field-group JSON. ACF is heavier than the field set warrants today, adds a plugin dependency to every converted site, and requires admins to understand ACF to reshape fields later. Revisit if a future system needs ACF-only features (repeaters, conditional logic, relationship fields).
+
+**Why:**
+- A labeled, typed input ("Review Date" with a date picker) is dramatically more discoverable and harder to corrupt than a raw `_testimonial_review_date` text field — meets the project's "ease of implementation" / non-technical-user priority from CLAUDE.md.
+- Marking the Scorpion ID read-only protects the re-import idempotency contract (`post_name=<system>-<ScorpionID>` joins on this key) — admins can't accidentally break re-conversion by editing it.
+- The pattern already exists in the codebase: the "Scorpion Zones" metabox on the `page` post type uses the same shape (registered in `functions.php`, labeled textareas per zone, save handler in the same file). Reusing that pattern keeps the converter self-contained — no new plugin dependency, no per-site maintenance.
+- The `supports` array on each CPT drops `custom-fields` so the stock panel doesn't appear alongside the purpose-built metabox.
+
+**How it's structured (standard shape):**
+- Each system declares its **field schema** in its `pipeline/build/cpts/<system>.ts` file: an array of `{ metaKey, label, inputType, readOnly, selector }`. `selector` is a closure that pulls the value off the parsed entity at WXR build time. The same schema drives both the WXR postmeta emission and the metabox PHP generation, so the two can't drift.
+- A shared `buildCptMetaboxPhp(schema)` helper in `pipeline/build/cpt-metabox.ts` generates the PHP for the metabox registration, the renderer (HTML inputs from the schema), and the save handler (one `update_post_meta` call per editable field, with a nonce + autosave + capability guards). Input types supported: `text`, `date`, `number`, `textarea`, `wp_editor` — rich types (`textarea`, `wp_editor`) skip `sanitize_text_field` on save so newlines and inline HTML survive. Adding a new system means adding the schema; the PHP is generated.
+- **Only `post_title` uses a WP-native slot.** Every other system field — including long-form content like body and caption — lives in postmeta and is surfaced through the metabox. The CPT's `supports` array is minimal (typically `['title', 'revisions']`); `editor`, `excerpt`, and `custom-fields` are all dropped so the admin has exactly one editing surface, no hidden panels.
+- Date-typed fields require a normalization step (Scorpion's source columns are freeform strings like "12/25/2024" or "December 25, 2024"). Each system provides a helper that converts to YYYY-MM-DD so the metabox's `type="date"` picker renders the stored value; unparseable strings are passed through verbatim and the date input renders blank.
+
+---
+
 ## Navigation: Crawler-based vs. endpoint-provided
 
 **Decision:** Navigation is extracted entirely by the crawler from each page's `<nav>` element.

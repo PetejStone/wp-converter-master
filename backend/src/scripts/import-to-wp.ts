@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { desc, eq, isNotNull } from "drizzle-orm";
 import { closeDb, db } from "../db/client";
@@ -115,6 +115,7 @@ async function main() {
   const mediaSrc = join(outputDir, "media");
   const wxrSrc = join(outputDir, "import.xml");
   const redirectsSrc = join(outputDir, "redirects.csv");
+  const cptUiSrc = join(outputDir, "cptui-export.json");
 
   if (!existsSync(themeSrc) || !existsSync(wxrSrc)) {
     console.error(`Expected files missing in ${outputDir}`);
@@ -297,6 +298,40 @@ async function main() {
   console.log("\nInstalling complianz-gdpr plugin (cookie consent)…");
   wpCli(["plugin", "install", "complianz-gdpr", "--force"]);
   wpCli(["plugin", "activate", "complianz-gdpr"]);
+
+  // ---- 6d. Install + activate Custom Post Type UI + import CPT schema ----
+  // CPT UI registers the scorpion_testimonial post type (and any future
+  // Scorpion-system CPTs) at WP init so the WXR import in step 7 can land
+  // its scorpion_testimonial <item>s without WP rejecting an unknown
+  // post_type. Schema lives in outputDir/cptui-export.json; the inner
+  // `post_types` / `taxonomies` objects get written directly to the
+  // plugin's WP options (CPT UI reads those on every init).
+  if (existsSync(cptUiSrc)) {
+    console.log("\nInstalling custom-post-type-ui plugin…");
+    wpCli(["plugin", "install", "custom-post-type-ui", "--force"]);
+    wpCli(["plugin", "activate", "custom-post-type-ui"]);
+
+    console.log("Loading CPT UI schema…");
+    const cptUiRaw = readFileSync(cptUiSrc, "utf8");
+    const cptUiJson = JSON.parse(cptUiRaw) as {
+      post_types?: Record<string, unknown>;
+      taxonomies?: Record<string, unknown>;
+    };
+    wpCli([
+      "option",
+      "update",
+      "cptui_post_types",
+      JSON.stringify(cptUiJson.post_types ?? {}),
+      "--format=json",
+    ]);
+    wpCli([
+      "option",
+      "update",
+      "cptui_taxonomies",
+      JSON.stringify(cptUiJson.taxonomies ?? {}),
+      "--format=json",
+    ]);
+  }
 
   // ---- 6c. Install + activate Redirection (only when there's a CSV) ----
   // Redirection owns the 301 rules ingested from Scorpion's

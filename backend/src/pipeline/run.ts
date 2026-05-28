@@ -11,6 +11,7 @@ import {
   collectAssets,
   collectMedia,
   extractAllContentZones,
+  injectTestimonialPanelPlaceholders,
 } from "./parse";
 
 export interface RunConversionInput {
@@ -55,6 +56,15 @@ export async function runConversion(
   await transition(jobId, { status: "parse" });
   const assets = collectAssets(crawl);
   const media = collectMedia(crawl);
+  // Inject testimonial-panel placeholders BEFORE content-zone extraction
+  // so the comment ends up inside whichever container the panel lived
+  // in — page-template HTML or a content zone's inner HTML — without
+  // panel detection needing to know which. The build step substitutes
+  // the placeholders for shortcode calls.
+  const testimonialPanels = injectTestimonialPanelPlaceholders(
+    crawl,
+    ingest.testimonials,
+  );
   const contentZones = extractAllContentZones(crawl, ingest.contentZoneIds);
   const formAnalysis = analyzeForms(crawl);
   const navAnalysis = analyzeNavigation(crawl);
@@ -72,6 +82,7 @@ export async function runConversion(
     contentZones,
     formAnalysis,
     navAnalysis,
+    testimonialPanelCount: testimonialPanels.length,
   });
 
   await transition(jobId, {

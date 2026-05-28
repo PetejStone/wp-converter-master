@@ -24,3 +24,8 @@ export type {
 } from "./forms";
 export { analyzeNavigation } from "./navigation";
 export type { NavItem, NavVariant, NavAnalysis } from "./navigation";
+export {
+  injectTestimonialPanelPlaceholders,
+  TESTIMONIAL_PANEL_COMMENT_RE,
+} from "./testimonial-panels";
+export type { DetectedTestimonialPanel } from "./testimonial-panels";

@@ -49,6 +49,22 @@ export interface BlogEntry {
   categoryIds: string[];
 }
 
+// A testimonial from `#TestimonialTable` on /wp-converter/. `reviewId` is
+// Scorpion's stable numeric identifier — it's also rendered as the
+// `data-key` attribute on every page that displays the testimonial,
+// which the panel-detection pass uses to find replacement targets in
+// crawled HTML. Empty `reviewDate` is preserved as-is (the column exists
+// on every site but is often unpopulated). `caption` is a short lead-in
+// shown in compact panels; `body` is the full review text.
+export interface Testimonial {
+  reviewId: string;
+  title: string;
+  author: string;
+  reviewDate: string;
+  caption: string;
+  body: string;
+}
+
 export interface IngestResult {
   siteUrl: string;
   pages: ScorpionPage[];
@@ -70,4 +86,10 @@ export interface IngestResult {
   // attaches `<category>` elements to the matching post items by path.
   // Empty when the site hasn't been updated to expose the table yet.
   blogEntries: BlogEntry[];
+  // Testimonials from `#TestimonialTable`. The panel-detection pass joins
+  // each entry to its rendered `data-key="<reviewId>"` occurrences in
+  // crawled HTML so testimonial panels can be replaced with a
+  // `[scorpion_testimonials]` shortcode at template build time. Empty
+  // when the site doesn't expose the table.
+  testimonials: Testimonial[];
 }

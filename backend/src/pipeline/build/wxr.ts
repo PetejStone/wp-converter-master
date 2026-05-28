@@ -1,6 +1,10 @@
-import type { BlogCategory, BlogEntry } from "../ingest";
+import type { BlogCategory, BlogEntry, Testimonial } from "../ingest";
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
 import type { Cf7Form } from "./cf7-forms";
+import {
+  TESTIMONIAL_META_FIELDS,
+  TESTIMONIAL_POST_TYPE,
+} from "./cpts/testimonials";
 import type { PageHierarchy, PageNode } from "./hierarchy";
 import { stripBlockedDomainContent } from "./strip-blocked-domains";
 import {
@@ -8,6 +12,7 @@ import {
   stripScorpionLinks,
 } from "./strip-scorpion-links";
 import { substituteSvgIcons } from "./svg-icons";
+import { substituteTestimonialPanels } from "./templates";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { zoneMetaKey, zoneMetaOriginalKey } from "./zone-meta";
 
@@ -22,6 +27,12 @@ export interface WxrInputs {
   cf7Forms?: Cf7Form[];
   blogCategories?: BlogCategory[];
   blogEntries?: BlogEntry[];
+  // Testimonials from `#TestimonialTable`. Emitted as
+  // `post_type=scorpion_testimonial` items. `testimonialBasePostId` is
+  // the first post_id to use; each entry consumes one (in array order),
+  // mirroring how Cf7Forms are allocated upstream.
+  testimonials?: Testimonial[];
+  testimonialBasePostId?: number;
 }
 
 const PRIMARY_MENU_TERM_ID = 1;
@@ -51,11 +62,23 @@ export function buildWxrXml(inputs: WxrInputs): string {
 
   const cf7Items = (inputs.cf7Forms ?? []).map(buildCf7Item);
 
+  const testimonialItems =
+    inputs.testimonials && inputs.testimonialBasePostId !== undefined
+      ? inputs.testimonials.map((t, i) =>
+          buildTestimonialItem(t, (inputs.testimonialBasePostId ?? 0) + i),
+        )
+      : [];
+
   const categoryTerms = (inputs.blogCategories ?? []).map((cat, i) =>
     buildCategoryTerm(cat, i + 2),
   );
 
-  const itemsBlock = [...pageItems, ...navItems, ...cf7Items].join("\n");
+  const itemsBlock = [
+    ...pageItems,
+    ...navItems,
+    ...cf7Items,
+    ...testimonialItems,
+  ].join("\n");
   const categoryBlock =
     categoryTerms.length > 0 ? categoryTerms.join("\n") + "\n" : "";
   const termBlock = navTerm ? `${navTerm}\n` : "";
@@ -161,6 +184,11 @@ function buildPageItem(
       innerHtml = substituteSvgIcons(innerHtml, inputs.iconMap);
       innerHtml = stripBlockedDomainContent(innerHtml);
       innerHtml = stripScorpionLinks(innerHtml);
+      // Zone HTML lands in postmeta — emit bare [scorpion_testimonials …]
+      // shortcode tags here (no PHP wrapper); the scorpion_zone shortcode
+      // handler in functions.php runs do_shortcode on the postmeta value
+      // so nested shortcodes resolve.
+      innerHtml = substituteTestimonialPanels(innerHtml, false);
       // Two entries per zone: the editable copy that the [scorpion_zone]
       // shortcode reads, and a `__original` snapshot the "Scorpion Zones"
       // admin metabox uses for its per-zone Revert button.
@@ -216,6 +244,9 @@ function buildPageItem(
     bodyHtml = substituteSvgIcons(bodyHtml, inputs.iconMap);
     bodyHtml = stripBlockedDomainContent(bodyHtml);
     bodyHtml = stripScorpionLinks(bodyHtml);
+    // post_content runs through the_content() at render time so a bare
+    // [scorpion_testimonials …] shortcode tag is resolved automatically.
+    bodyHtml = substituteTestimonialPanels(bodyHtml, false);
   }
   const contentEncoded = bodyHtml
     ? cdata(`<!-- wp:freeform -->\n${bodyHtml}\n<!-- /wp:freeform -->`)
@@ -423,6 +454,67 @@ function buildCf7Item(form: Cf7Form): string {
       <wp:post_parent>0</wp:post_parent>
       <wp:menu_order>0</wp:menu_order>
       <wp:post_type><![CDATA[wpcf7_contact_form]]></wp:post_type>
+      <wp:post_password><![CDATA[]]></wp:post_password>
+      <wp:is_sticky>0</wp:is_sticky>
+${meta}
+    </item>`;
+}
+
+// One CPT entry per row from #TestimonialTable. Renders at site time via
+// the [scorpion_testimonials ids="…"] shortcode (registered in
+// functions.php), which queries by `_testimonial_scorpion_id` postmeta
+// — that's the same `data-key` Scorpion stamped on the source markup,
+// so re-imports stay idempotent: a re-converted site updates each
+// testimonial's content in place rather than duplicating posts. The
+// stable `post_name` (`testimonial-<reviewId>`) gives the WP importer
+// the same idempotency on its end.
+//
+// Postmeta is driven by TESTIMONIAL_META_FIELDS from cpts/testimonials.ts
+// — the same schema that generates the admin metabox in functions.php.
+// Read-only schema entries (e.g. the Scorpion ID join key) always emit;
+// editable entries skip when empty so we don't ship empty metakeys.
+function buildTestimonialItem(t: Testimonial, postId: number): string {
+  const itemDate = new Date(Date.now() - postId * 1000);
+  const sqlDate = formatMysqlDate(itemDate);
+  const pubDate = itemDate.toUTCString();
+
+  // Every field — including caption and body — flows through the schema
+  // into postmeta. post_excerpt and post_content are emitted empty: the
+  // CPT's `supports` array drops 'editor' and 'excerpt' so neither native
+  // slot has a UI on this post type, and the front-end shortcode reads
+  // both from postmeta. Read-only schema entries (Scorpion ID) always
+  // emit; editable entries skip when empty.
+  const meta = TESTIMONIAL_META_FIELDS
+    .map((field) => {
+      const value = field.selector(t);
+      return field.readOnly
+        ? postmetaRaw(field.metaKey, value)
+        : postmeta(field.metaKey, value);
+    })
+    .filter((s) => s.length > 0)
+    .join("\n");
+
+  const title = t.title || `Testimonial ${t.reviewId}`;
+
+  return `    <item>
+      <title>${xmlText(title)}</title>
+      <link></link>
+      <pubDate>${pubDate}</pubDate>
+      <dc:creator><![CDATA[admin]]></dc:creator>
+      <guid isPermaLink="false">testimonial-${t.reviewId}</guid>
+      <description></description>
+      <content:encoded><![CDATA[]]></content:encoded>
+      <excerpt:encoded><![CDATA[]]></excerpt:encoded>
+      <wp:post_id>${postId}</wp:post_id>
+      <wp:post_date><![CDATA[${sqlDate}]]></wp:post_date>
+      <wp:post_date_gmt><![CDATA[${sqlDate}]]></wp:post_date_gmt>
+      <wp:comment_status><![CDATA[closed]]></wp:comment_status>
+      <wp:ping_status><![CDATA[closed]]></wp:ping_status>
+      <wp:post_name><![CDATA[testimonial-${t.reviewId}]]></wp:post_name>
+      <wp:status><![CDATA[publish]]></wp:status>
+      <wp:post_parent>0</wp:post_parent>
+      <wp:menu_order>0</wp:menu_order>
+      <wp:post_type><![CDATA[${TESTIMONIAL_POST_TYPE}]]></wp:post_type>
       <wp:post_password><![CDATA[]]></wp:post_password>
       <wp:is_sticky>0</wp:is_sticky>
 ${meta}

@@ -235,6 +235,93 @@ The WXR file is consumed by WordPress's built-in importer (`Tools → Import →
 
 ---
 
+## Custom Post Types (Scorpion systems)
+
+Structured Scorpion systems — testimonials, locations, team, services, FAQs, etc. — are migrated as WordPress Custom Post Types. The CPT UI plugin is auto-installed and `cptui-export.json` (shipped in the export root) registers each post type. Front-end rendering uses a `[scorpion_<system>s ids="…"]` shortcode that queries the CPT by its Scorpion-side join key.
+
+### Field editability standard
+
+Every system CPT ships a **purpose-built metabox** in `functions.php`. This is the standard — never rely on WP's stock "Custom Fields" panel for system fields.
+
+Per CPT:
+- The `supports` array is deliberately minimal — typically just `['title', 'revisions']`. **Everything else** is dropped:
+  - `custom-fields` is absent → stock key/value Custom Fields panel is hidden.
+  - `editor` is absent → no main Gutenberg editor area; the body field lives in the metabox instead.
+  - `excerpt` is absent → no Excerpt panel; the short-form caption field lives in the metabox instead.
+- The only WP-native slot used is `post_title` (it drives search, listings, the wp-admin row label) — every other system field lives in **postmeta** and is surfaced through a single metabox registered on that post type. This keeps the admin to **one editing surface**: there's no "which panel do I edit this in?" question.
+- Each metabox field is rendered with the input type that fits the data:
+  - `text` / `date` / `number` → single-line `<input type="…">`. Use `date` only when the selector returns YYYY-MM-DD; the per-system module is responsible for normalizing freeform source values into that shape.
+  - `textarea` → multi-line `<textarea>` (preserves newlines; for short prose fields like a quote caption).
+  - `wp_editor` → WP's TinyMCE rich-text editor (Visual + Text tabs, same control the page editor uses; for HTML body content).
+- The Scorpion-side join key (e.g. `_testimonial_scorpion_id`) is rendered **read-only** with a "required for re-import idempotency" hint — admins can see it but not edit it.
+
+### Field schema (single source of truth)
+
+Each system declares its field schema in `pipeline/build/cpts/<system>.ts`:
+
+```ts
+export const TESTIMONIAL_META_FIELDS: CptMetaField<Testimonial>[] = [
+  { metaKey: '_testimonial_scorpion_id', label: 'Scorpion ID', inputType: 'text',     readOnly: true, selector: t => t.reviewId },
+  { metaKey: '_testimonial_author',      label: 'Author',      inputType: 'text',                     selector: t => t.author },
+  { metaKey: '_testimonial_review_date', label: 'Review Date', inputType: 'date',                     selector: t => toIsoDate(t.reviewDate) },
+  { metaKey: '_testimonial_caption',     label: 'Caption',     inputType: 'textarea',                 selector: t => t.caption },
+  { metaKey: '_testimonial_body',        label: 'Testimonial', inputType: 'wp_editor',                selector: t => t.body },
+];
+```
+
+The `selector` closure binds the schema entry to the parsed entity's field; it's invoked at WXR build time to produce the postmeta value. Date selectors should run a normalization helper (e.g. `toIsoDate()`) so the metabox's `type="date"` picker can render the stored value — values that can't be parsed are passed through verbatim and the date input shows blank.
+
+The same schema drives:
+1. **WXR postmeta emission** — one `<wp:postmeta>` per field, with the row's value.
+2. **Metabox PHP generation** — registration + renderer + save handler are produced by a shared `buildCptMetaboxPhp(schema)` helper in `pipeline/build/theme.ts`.
+
+Generated metabox structure (per CPT):
+
+```php
+function scorpion_<system>_register_metabox() {
+    add_meta_box(
+        'scorpion-<system>-fields',
+        '<System Singular> Fields',
+        'scorpion_<system>_render_metabox',
+        'scorpion_<system>',
+        'normal',
+        'high'
+    );
+}
+add_action('add_meta_boxes', 'scorpion_<system>_register_metabox');
+
+function scorpion_<system>_render_metabox($post) {
+    wp_nonce_field('scorpion_<system>_save', 'scorpion_<system>_nonce');
+    // One labeled input per schema entry; readOnly entries render `readonly`.
+}
+
+function scorpion_<system>_save_metabox($post_id) {
+    // Nonce + autosave + capability checks, then one update_post_meta per
+    // editable schema entry. Read-only entries are skipped.
+}
+add_action('save_post_scorpion_<system>', 'scorpion_<system>_save_metabox');
+```
+
+### Adding a new system
+
+1. Add `pipeline/parse/cpts/<system>.ts` (panel detection — find `[data-key]` matches in rendered HTML, group by smallest common ancestor).
+2. Add `pipeline/build/cpts/<system>.ts` with the CPT UI JSON shape, the field schema, and the shortcode markup.
+3. Register both in the system registry — `buildWxrXml` and `buildFunctionsPhp` pick up the schema automatically and emit the postmeta + metabox PHP.
+4. Add a `/wp-converter/` table on the Scorpion side publishing the rows.
+
+No edits to core pipeline code needed.
+
+### Why this is the standard
+
+- Labeled, typed inputs are dramatically more discoverable than the stock Custom Fields panel (which is hidden by default in modern WP and exposes raw internal meta keys).
+- Read-only treatment of the Scorpion join key protects re-import idempotency — admins can't accidentally break re-conversion.
+- No new plugin dependency — matches CLAUDE.md's "minimal ongoing maintenance" principle.
+- Mirrors the existing "Scorpion Zones" metabox on the `page` post type, so the codebase has one consistent shape for admin-side editability.
+
+See `DECISIONS.md` → "CPT field editability" for the rationale and rejected alternatives (ACF, stock Custom Fields panel).
+
+---
+
 ## SEO Metadata
 
 SEO metadata is stored as post meta. The tool writes meta keys compatible with **Yoast SEO** (most common WP SEO plugin). If a different SEO plugin is needed, only the meta key names change.

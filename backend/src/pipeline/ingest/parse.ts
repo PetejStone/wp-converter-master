@@ -5,6 +5,7 @@ import type {
   BlogEntry,
   ScorpionPage,
   SiteRedirect,
+  Testimonial,
 } from "./types";
 
 export interface ParsedTables {
@@ -14,6 +15,7 @@ export interface ParsedTables {
   redirects: SiteRedirect[];
   blogCategories: BlogCategory[];
   blogEntries: BlogEntry[];
+  testimonials: Testimonial[];
 }
 
 export function parseWpConverter(
@@ -27,6 +29,7 @@ export function parseWpConverter(
   const redirects = parseSiteRedirectTable($);
   const blogCategories = parseBlogCategoriesTable($);
   const blogEntries = parseBlogTable($);
+  const testimonials = parseTestimonialTable($);
   return {
     pages,
     contentZoneIds,
@@ -34,6 +37,7 @@ export function parseWpConverter(
     redirects,
     blogCategories,
     blogEntries,
+    testimonials,
   };
 }
 
@@ -334,6 +338,67 @@ function parseBlogTable($: cheerio.CheerioAPI): BlogEntry[] {
       : [];
 
     out.push({ path, categoryIds });
+  });
+  return out;
+}
+
+// #TestimonialTable holds (Title, Author, Review Date, Caption, Testimonial)
+// with each row carrying a `data-key="<reviewId>"` attribute that joins
+// to the same `data-key` Scorpion renders on testimonial panel elements
+// across the live site. Optional table — sites that haven't been updated
+// to expose it skip CPT extraction entirely (the rest of the pipeline
+// continues working). Order in the source table is preserved so admin
+// listings stay in the same order Scorpion shows.
+function parseTestimonialTable($: cheerio.CheerioAPI): Testimonial[] {
+  const table = $("#TestimonialTable");
+  if (table.length === 0) return [];
+
+  const headerCells = table.find("tr").first().find("th, td");
+  const headerIndex = new Map<string, number>();
+  headerCells.each((i, el) => {
+    headerIndex.set($(el).text().trim().toLowerCase(), i);
+  });
+  const idxOr = (labels: string[], fallback: number): number => {
+    for (const label of labels) {
+      const i = headerIndex.get(label);
+      if (i !== undefined) return i;
+    }
+    return fallback;
+  };
+  const titleIdx = idxOr(["title"], 0);
+  const authorIdx = idxOr(["author", "name"], 1);
+  const dateIdx = idxOr(["review date", "date"], 2);
+  const captionIdx = idxOr(["caption"], 3);
+  const bodyIdx = idxOr(["testimonial", "body", "review"], 4);
+
+  const seenIds = new Set<string>();
+  const out: Testimonial[] = [];
+  table.find("tr").each((index, tr) => {
+    if (index === 0) return;
+    const $tr = $(tr);
+    // data-key carries Scorpion's stable review ID; this is THE join key
+    // for panel detection on crawled HTML. Rows without it are unusable
+    // for the CPT pipeline so we skip them entirely.
+    const reviewId = $tr.attr("data-key")?.trim() ?? "";
+    if (!reviewId) return;
+    if (seenIds.has(reviewId)) return;
+
+    const cells = $tr.find("td");
+    if (cells.length < 5) return;
+
+    const title = cells.eq(titleIdx).text().trim();
+    const author = cells.eq(authorIdx).text().trim();
+    const reviewDate = cells.eq(dateIdx).text().trim();
+    const caption = cells.eq(captionIdx).text().trim();
+    const body = cells.eq(bodyIdx).text().trim();
+
+    // A row with no title AND no body is structurally empty — Scorpion's
+    // admin lets you save blank rows. Skip them rather than emitting
+    // empty CPT entries.
+    if (!title && !body) return;
+
+    seenIds.add(reviewId);
+    out.push({ reviewId, title, author, reviewDate, caption, body });
   });
   return out;
 }
