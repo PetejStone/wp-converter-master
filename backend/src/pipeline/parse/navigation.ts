@@ -16,6 +16,10 @@ export interface NavVariant {
 export interface NavAnalysis {
   variants: NavVariant[];
   pagesWithoutNav: { pageUrl: string; path: string }[];
+  // Footer "Quick Links" pulled from `<div id="FooterS3Nav">` on the
+  // first page that has it. Flat (all depth=0) since the footer doesn't
+  // have submenus. Empty when no page exposes the element.
+  footerQuickLinks: NavItem[];
 }
 
 export function analyzeNavigation(crawl: CrawlResult): NavAnalysis {
@@ -45,7 +49,37 @@ export function analyzeNavigation(crawl: CrawlResult): NavAnalysis {
     (a, b) => b.pages.length - a.pages.length,
   );
 
-  return { variants, pagesWithoutNav };
+  return {
+    variants,
+    pagesWithoutNav,
+    footerQuickLinks: extractFooterQuickLinks(crawl, hostname),
+  };
+}
+
+// Scan crawled pages for `<div id="FooterS3Nav">` (Scorpion's footer
+// Quick Links container) and return its `<a>` items. The footer is
+// consistent across pages so we take the first non-empty match.
+function extractFooterQuickLinks(
+  crawl: CrawlResult,
+  hostname: string,
+): NavItem[] {
+  for (const page of crawl.pages) {
+    if (page.status !== "ok" || !page.fullHtml) continue;
+    const $ = cheerio.load(page.fullHtml);
+    const $nav = $("#FooterS3Nav");
+    if ($nav.length === 0) continue;
+
+    const items: NavItem[] = [];
+    $nav.find("a").each((_, a) => {
+      const $a = $(a);
+      const href = normaliseHref($a.attr("href") ?? "", hostname);
+      const text = $a.text().trim().replace(/\s+/g, " ");
+      if (!href && !text) return;
+      items.push({ href, text, depth: 0 });
+    });
+    if (items.length > 0) return items;
+  }
+  return [];
 }
 
 function parseNavHtml(html: string, hostname: string): NavItem[] {

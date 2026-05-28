@@ -455,6 +455,31 @@ async function main() {
     console.log("  (no page with slug 'home' found — skipping)");
   }
 
+  // ---- 8b. Assign imported nav menus to theme locations ----
+  // The WXR imports the menus as terms ("Primary Menu", "Footer Quick
+  // Links"); the theme registers matching locations in functions.php.
+  // wp-cli's `menu location assign` is the glue that connects them so
+  // wp_nav_menu(['theme_location' => 'primary']) resolves to the
+  // imported menu. Idempotent — re-running assigns the same location to
+  // the same menu without error.
+  console.log("\nAssigning imported nav menus to theme locations…");
+  for (const [slug, location] of [
+    ["primary-menu", "primary"],
+    ["footer-quick-links", "footer-quick-links"],
+  ]) {
+    try {
+      wpCli(["menu", "location", "assign", slug, location], {
+        capture: true,
+      });
+      console.log(`  '${slug}' → ${location}`);
+    } catch (err) {
+      // The "Footer Quick Links" menu may not exist yet on sites where
+      // the build hasn't captured a footer-nav variant; skip silently.
+      const detail = err instanceof Error ? err.message : String(err);
+      console.log(`  skipped ${slug} → ${location}: ${detail.split("\n")[0]}`);
+    }
+  }
+
   // ---- 9. Done ----
   console.log("\n✅ Import complete.");
   console.log(`   Public:  http://localhost:${WP_HOST_PORT}/`);

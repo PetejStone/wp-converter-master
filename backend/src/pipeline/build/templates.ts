@@ -255,6 +255,53 @@ function buildPageTemplate(
     }
   }
 
+  // Side nav: swap the exemplar's baked-in `<nav id="SideNavV1SideNav">`
+  // body for a placeholder that becomes `<?php scorpion_branch_nav(); ?>`.
+  // The helper (defined in functions.php) walks the current page's
+  // ancestors to find the top-level branch and lists its children with
+  // the active page marked `selected`. Without this swap, every page
+  // sharing a template inherits the exemplar's branch (e.g. every Child A
+  // template page would show /about-us/blog/'s branch).
+  const branchNavToken = "WP_SCORPION_BRANCH_NAV";
+  let branchNavInjected = false;
+  const $sideNav = $("#SideNavV1SideNav");
+  if ($sideNav.length > 0) {
+    $sideNav.empty();
+    $sideNav.append(`<!-- ${branchNavToken} -->`);
+    branchNavInjected = true;
+  }
+
+  // Top nav: swap the baked-in <ul id="HeaderS4TopNav"> children for the
+  // wp_nav_menu output. Admins edit the menu at Appearance → Menus and
+  // every page picks up the change automatically. Walker_Nav_Menu
+  // produces Scorpion-style markup so the existing CSS keeps applying.
+  const primaryNavToken = "WP_SCORPION_PRIMARY_NAV";
+  let primaryNavInjected = false;
+  const $topNav = $("#HeaderS4TopNav");
+  if ($topNav.length > 0) {
+    $topNav.empty();
+    $topNav.append(`<!-- ${primaryNavToken} -->`);
+    primaryNavInjected = true;
+  }
+
+  // Footer Quick Links: same idea, but a flat one-level menu. The baked-
+  // in <div id="FooterS3Nav"> body is replaced with the wp_nav_menu
+  // output for the "footer-quick-links" theme location.
+  const footerQuickLinksToken = "WP_SCORPION_FOOTER_QUICK_LINKS";
+  let footerQuickLinksInjected = false;
+  const $footerNav = $("#FooterS3Nav");
+  if ($footerNav.length > 0) {
+    // The baked-in markup wraps the items in <ul>...</ul>. Replace just
+    // the children of that ul so the surrounding container keeps its
+    // classes (used for spacing / divider styling).
+    const $ul = $footerNav.find("ul").first();
+    if ($ul.length > 0) {
+      $ul.empty();
+      $ul.append(`<!-- ${footerQuickLinksToken} -->`);
+      footerQuickLinksInjected = true;
+    }
+  }
+
   // Swap Scorpion's contact form for the matching CF7 shortcode. Scorpion
   // wraps each contact panel in a <form> shell (ASP.NET WebForms) with the
   // actual field repeater in a <div class="…ui-contact-form…"> — surrounded
@@ -334,6 +381,24 @@ function buildPageTemplate(
     html = html.replace(
       `<!-- ${articleContentToken} -->`,
       "<?php the_content(); ?>",
+    );
+  }
+  if (branchNavInjected) {
+    html = html.replace(
+      `<!-- ${branchNavToken} -->`,
+      "<?php scorpion_branch_nav(); ?>",
+    );
+  }
+  if (primaryNavInjected) {
+    html = html.replace(
+      `<!-- ${primaryNavToken} -->`,
+      "<?php scorpion_render_primary_nav(); ?>",
+    );
+  }
+  if (footerQuickLinksInjected) {
+    html = html.replace(
+      `<!-- ${footerQuickLinksToken} -->`,
+      "<?php scorpion_render_footer_quick_links(); ?>",
     );
   }
   for (const [token, shortcode] of cf7Replacements) {

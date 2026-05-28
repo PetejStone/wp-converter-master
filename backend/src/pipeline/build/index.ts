@@ -409,12 +409,16 @@ export async function buildWpPackage(
 
   const iconMap = inputs.ingest.iconMap;
 
-  // CF7 forms: allocate post_ids after pages + nav menu items so they
-  // don't collide. The dominant nav variant claims hierarchy.maxPostId + 1
-  // .. + items.length inside wxr.ts; CF7 posts start after that.
+  // CF7 forms: allocate post_ids after pages + primary nav items + footer
+  // Quick Links items so they don't collide. Primary nav claims
+  // hierarchy.maxPostId + 1 .. + items.length inside wxr.ts; footer Quick
+  // Links runs from there to + footerItems.length; CF7 posts start after.
   const dominantNav = inputs.navAnalysis?.variants[0];
   const navItemCount = dominantNav?.items.length ?? 0;
-  const cf7BasePostId = hierarchy.maxPostId + navItemCount + 1;
+  const footerNavItemCount =
+    inputs.navAnalysis?.footerQuickLinks?.length ?? 0;
+  const cf7BasePostId =
+    hierarchy.maxPostId + navItemCount + footerNavItemCount + 1;
   const cf7Forms: Cf7Form[] = buildCf7Forms({
     variants: inputs.formAnalysis.variants,
     basePostId: cf7BasePostId,
