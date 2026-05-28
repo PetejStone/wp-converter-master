@@ -243,6 +243,254 @@ add_filter('wpcf7_form_elements', function ($html) {
 });
 
 /**
+ * Register the theme's nav menu locations. The wordpress-importer plugin
+ * imports the nav_menu_item posts from the WXR; this hook tells WP which
+ * named locations the theme accepts so admins can drag-drop swaps at
+ * Appearance → Menus. import-to-wp.ts assigns the imported "Primary
+ * Menu" and "Footer Quick Links" terms to these locations via wp-cli.
+ */
+add_action('after_setup_theme', function () {
+    register_nav_menus(array(
+        'primary' => 'Primary Menu',
+        'footer-quick-links' => 'Footer Quick Links',
+    ));
+});
+
+/**
+ * Walker_Nav_Menu subclass that emits Scorpion's exact nav markup so the
+ * existing CSS (.nv.flx-at-1280, .fly-nv, .fnt_nv-lnk, etc.) keeps
+ * applying. Top-level items get the desktop "tab" classes; submenu items
+ * get the dropdown classes and are wrapped in a fly-nv div + ul.
+ *
+ * Mirrors the Scorpion source structure:
+ *   top-level li:        <li class="flx ato rlt [selected]">
+ *   top-level a:         class="ato flx f_m fnt_nv-lnk clr-swp pd_tp pd_bt"
+ *   submenu wrapper:     <div class="fly-nv full ui-scroll bx-sdw bg-bx ulk-bg">
+ *   submenu ul:          <ul class="pd_v pd_h" role="menu">
+ *   submenu li:          <li class="bdr_bt" data-closing="true">
+ *   submenu a:           class="ato blk fnt_nv-lnk clr-swp pd_bt-30 pd_tp-30"
+ */
+class Scorpion_Nav_Walker extends Walker_Nav_Menu {
+    /**
+     * Submenu wrapper. Scorpion has two distinct submenu shapes:
+     *
+     *   depth 0 -> depth 1 (top-level -> child)
+     *     emits a div.fly-nv > ul.pd_v.pd_h — the absolutely-positioned
+     *     flyout that pops out from the top nav bar on hover/click.
+     *
+     *   depth 1 -> depth 2 (child -> grandchild)
+     *     emits a bare ul.full.el-panel.sld that nests inline INSIDE
+     *     the parent li, expanded by clicking the adjacent arrow span.
+     *     Wrapping it in another .fly-nv (what the default walker would
+     *     do) breaks the dropdown because .fly-nv positions absolutely
+     *     from the wrong anchor.
+     */
+    public function start_lvl(&$output, $depth = 0, $args = null) {
+        if ($depth === 0) {
+            $output .= '<div class="fly-nv full ui-scroll bx-sdw bg-bx ulk-bg"><ul class="pd_v pd_h" role="menu">';
+        } else {
+            $output .= '<ul class="full el-panel sld pd_h bdr_tp pd_tp-20 pd_bt-20" role="menu">';
+        }
+    }
+    public function end_lvl(&$output, $depth = 0, $args = null) {
+        if ($depth === 0) {
+            $output .= '</ul></div>';
+        } else {
+            $output .= '</ul>';
+        }
+    }
+    public function start_el(&$output, $item, $depth = 0, $args = null, $id = 0) {
+        $classes = empty($item->classes) ? array() : (array) $item->classes;
+        $has_children = in_array('menu-item-has-children', $classes, true);
+        $is_active = in_array('current-menu-item', $classes, true)
+            || in_array('current-menu-parent', $classes, true)
+            || in_array('current-menu-ancestor', $classes, true);
+
+        if ($depth === 0) {
+            // Top-level item: classic Scorpion tab.
+            $li_class = 'flx ato rlt';
+            if ($has_children) {
+                $li_class .= ' el-tab-box';
+            }
+            if ($is_active) {
+                $li_class .= ' selected';
+            }
+            $a_class = 'ato flx f_m fnt_nv-lnk clr-swp pd_tp pd_bt';
+            if ($is_active) {
+                $a_class .= ' selected';
+            }
+            $output .= '<li class="' . esc_attr($li_class) . '">';
+            $output .= '<a class="' . esc_attr($a_class) . '" href="' . esc_url($item->url) . '" role="menuitem"';
+            $a_close = $this->scorpion_target($item) . '>' . esc_html($item->title) . '</a>';
+        } elseif ($depth === 1) {
+            // Direct child of a top-level. Items with grandchildren get
+            // el-tab-box + a click-to-expand SVG arrow span; leaf items
+            // get the regular bdr_bt class only.
+            $li_class = 'bdr_bt';
+            if ($has_children) {
+                $li_class = 'flx f_m f_wrp el-tab-box ' . $li_class;
+            }
+            if ($is_active) {
+                $li_class .= ' selected';
+            }
+            $a_class = 'ato blk fnt_nv-lnk clr-swp pd_bt-30 pd_tp-30';
+            if ($is_active) {
+                $a_class .= ' selected';
+            }
+            $output .= '<li class="' . esc_attr($li_class) . '" data-closing="true">';
+            $output .= '<a class="' . esc_attr($a_class) . '" href="' . esc_url($item->url) . '" role="menuitem"';
+            $a_close = $this->scorpion_target($item) . '>' . esc_html($item->title) . '</a>';
+            if ($has_children) {
+                // Arrow toggle that opens the nested el-panel submenu.
+                // Aria label mirrors Scorpion's pattern: "Open child menu of <title>".
+                $aria = esc_attr('Open child menu of ' . $item->title);
+                $a_close .= '<span class="el-tab tb-arw rlt icn fit blk mrg_lt-90" aria-label="' . $aria . '">'
+                    . '<svg viewBox="0 0 24 24" class="blk icn" role="presentation">'
+                    . '<path d="M12 16l-6-6h12z"/>'
+                    . '</svg></span>';
+            }
+        } else {
+            // Grandchild and deeper. Uses Scorpion's grandchild typography
+            // class (grd-chd) so type / spacing matches the el-panel
+            // nested-list style instead of the depth-1 dropdown style.
+            $li_class = '';
+            if ($is_active) {
+                $li_class .= 'selected';
+            }
+            $a_class = 'blk fnt_nv-lnk grd-chd clr-swp pd_tp-20 pd_bt-20';
+            if ($is_active) {
+                $a_class .= ' selected';
+            }
+            $li_attr = $li_class !== '' ? ' class="' . esc_attr($li_class) . '"' : '';
+            $output .= '<li' . $li_attr . '>';
+            $output .= '<a class="' . esc_attr($a_class) . '" href="' . esc_url($item->url) . '" role="menuitem"';
+            $a_close = $this->scorpion_target($item) . '>' . esc_html($item->title) . '</a>';
+        }
+
+        $output .= $a_close;
+    }
+    public function end_el(&$output, $item, $depth = 0, $args = null) {
+        $output .= '</li>';
+    }
+    /**
+     * Emit a target attribute even when the menu item has no explicit
+     * target — matches Scorpion's markup which always renders an empty
+     * target attribute for downstream CSS / JS that expects it.
+     */
+    protected function scorpion_target($item) {
+        if (!empty($item->target)) {
+            return ' target="' . esc_attr($item->target) . '"';
+        }
+        return ' target=""';
+    }
+}
+
+/**
+ * Renders the primary nav into the position once held by the baked-in
+ * <ul id="HeaderS4TopNav"> children. Falls back to a no-op so pages on a
+ * site that hasn't yet been crawled into a primary menu still render
+ * cleanly (the empty ul is fine).
+ */
+function scorpion_render_primary_nav() {
+    if (!has_nav_menu('primary')) {
+        return;
+    }
+    wp_nav_menu(array(
+        'theme_location' => 'primary',
+        'container' => false,
+        'items_wrap' => '%3$s',
+        'walker' => new Scorpion_Nav_Walker(),
+        'fallback_cb' => false,
+    ));
+}
+
+/**
+ * Renders the footer Quick Links menu into the position once held by
+ * the baked-in <ul> inside <div id="FooterS3Nav">. Plain flat list.
+ */
+function scorpion_render_footer_quick_links() {
+    if (!has_nav_menu('footer-quick-links')) {
+        return;
+    }
+    wp_nav_menu(array(
+        'theme_location' => 'footer-quick-links',
+        'container' => false,
+        'items_wrap' => '%3$s',
+        'fallback_cb' => false,
+        'depth' => 1,
+        'link_class' => 'clr-swp',
+    ));
+}
+
+/**
+ * Branch side-nav renderer. Replaces the baked-in nav body on every page
+ * that has a side-nav (via the templates.ts swap) with the current page's
+ * branch — top-level ancestor as the header, descendants underneath.
+ * Marks the current page (and any ancestor) with Scorpion's selected
+ * class for active-state styling.
+ *
+ * The HTML structure mirrors Scorpion's exemplar markup so the existing
+ * .sd-nv.v1 CSS keeps applying without changes.
+ *
+ * On a top-level page (no parent) the branch is just that page + its
+ * children. On a leaf page deep in a tree the branch is its top ancestor
+ * + the full descendant tree, with the leaf highlighted.
+ *
+ * Hidden when the current view isn't a page (post / 404 / 500 / etc.) —
+ * those templates don't include a side-nav placeholder anyway.
+ */
+function scorpion_branch_nav() {
+    if (!is_page()) {
+        return;
+    }
+    global $post;
+    if (!$post) {
+        return;
+    }
+    $current_id = $post->ID;
+    $ancestors = get_post_ancestors($current_id);
+    $top_id = empty($ancestors) ? $current_id : end($ancestors);
+    $top_title = get_the_title($top_id);
+    $top_url = get_permalink($top_id);
+
+    // Render the header link to the branch root.
+    echo '<header class="bdr_bt pd_bt-90">';
+    echo '<a class="blk" href="' . esc_url($top_url) . '">';
+    echo '<h5 class="fnt_t-co fnt_tc-co">' . esc_html($top_title) . '</h5>';
+    echo '</a></header>';
+
+    // Flat-list direct children of the branch root, sorted by menu_order
+    // then title. Each gets a "selected" class when it's on the current
+    // page's ancestor path.
+    $children = get_pages(array(
+        'parent'       => $top_id,
+        'sort_column'  => 'menu_order,post_title',
+        'post_status'  => 'publish',
+    ));
+
+    if (empty($children)) {
+        echo '<ul role="menu"></ul>';
+        return;
+    }
+
+    $ancestor_set = array_flip($ancestors);
+    $ancestor_set[$current_id] = true;
+
+    echo '<ul role="menu">';
+    foreach ($children as $child) {
+        $is_selected = isset($ancestor_set[$child->ID]);
+        $sel_li = $is_selected ? ' selected' : '';
+        $sel_a = $is_selected ? ' selected' : '';
+        echo '<li class="lvl-1' . $sel_li . ' bdr_bt" data-closing="true" data-slider="true">';
+        echo '<a class="ato pd_tp-90 pd_bt-90 fnt_t-4' . $sel_a . ' flx" href="' . esc_url(get_permalink($child->ID)) . '" target="" role="menuitem">';
+        echo '<span class="blk">' . esc_html(get_the_title($child->ID)) . '</span>';
+        echo '</a>';
+        echo '</li>';
+    }
+    echo '</ul>';
+}
+
+/**
  * Intercept /common/usc/p/<name>.{js,html,css} requests and serve the
  * corresponding file out of the theme's js/ dir.
  *

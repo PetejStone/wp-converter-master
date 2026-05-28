@@ -1,5 +1,10 @@
 import type { BlogCategory, BlogEntry, Testimonial } from "../ingest";
-import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
+import type {
+  NavAnalysis,
+  NavItem,
+  NavVariant,
+  PageContentZones,
+} from "../parse";
 import type { Cf7Form } from "./cf7-forms";
 import {
   TESTIMONIAL_META_FIELDS,
@@ -38,6 +43,9 @@ export interface WxrInputs {
 const PRIMARY_MENU_TERM_ID = 1;
 const PRIMARY_MENU_SLUG = "primary-menu";
 const PRIMARY_MENU_NAME = "Primary Menu";
+const FOOTER_QUICK_LINKS_TERM_ID = 100;
+const FOOTER_QUICK_LINKS_SLUG = "footer-quick-links";
+const FOOTER_QUICK_LINKS_NAME = "Footer Quick Links";
 
 export function buildWxrXml(inputs: WxrInputs): string {
   const zonesByPath = new Map(
@@ -55,9 +63,22 @@ export function buildWxrXml(inputs: WxrInputs): string {
   );
 
   const dominantNav = pickDominantNavVariant(inputs.navAnalysis);
-  const navTerm = dominantNav ? buildNavMenuTerm() : "";
-  const navItems = dominantNav
+  const primaryNavTerm = dominantNav ? buildNavMenuTerm() : "";
+  const primaryNavItems = dominantNav
     ? buildNavMenuItems(dominantNav, inputs.hierarchy.maxPostId)
+    : [];
+
+  // Footer Quick Links: parsed from the first `<div id="FooterS3Nav">`
+  // by analyzeNavigation. Allocate its post_ids after the primary nav
+  // so they don't collide. Emitting the term only when there are items
+  // keeps the WXR clean on sites without a footer nav.
+  const footerLinks = inputs.navAnalysis?.footerQuickLinks ?? [];
+  const footerNavTerm = footerLinks.length > 0 ? buildFooterQuickLinksTerm() : "";
+  const footerNavItems = footerLinks.length > 0
+    ? buildFooterQuickLinksItems(
+        footerLinks,
+        inputs.hierarchy.maxPostId + primaryNavItems.length,
+      )
     : [];
 
   const cf7Items = (inputs.cf7Forms ?? []).map(buildCf7Item);
@@ -75,13 +96,17 @@ export function buildWxrXml(inputs: WxrInputs): string {
 
   const itemsBlock = [
     ...pageItems,
-    ...navItems,
+    ...primaryNavItems,
+    ...footerNavItems,
     ...cf7Items,
     ...testimonialItems,
   ].join("\n");
   const categoryBlock =
     categoryTerms.length > 0 ? categoryTerms.join("\n") + "\n" : "";
-  const termBlock = navTerm ? `${navTerm}\n` : "";
+  const navTermsCombined = [primaryNavTerm, footerNavTerm]
+    .filter((t) => t.length > 0)
+    .join("\n");
+  const termBlock = navTermsCombined.length > 0 ? `${navTermsCombined}\n` : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"
@@ -315,13 +340,60 @@ function pickDominantNavVariant(
 }
 
 function buildNavMenuTerm(): string {
+  return buildNavMenuTermNamed(
+    PRIMARY_MENU_TERM_ID,
+    PRIMARY_MENU_SLUG,
+    PRIMARY_MENU_NAME,
+  );
+}
+
+function buildFooterQuickLinksTerm(): string {
+  return buildNavMenuTermNamed(
+    FOOTER_QUICK_LINKS_TERM_ID,
+    FOOTER_QUICK_LINKS_SLUG,
+    FOOTER_QUICK_LINKS_NAME,
+  );
+}
+
+function buildNavMenuTermNamed(
+  termId: number,
+  slug: string,
+  name: string,
+): string {
   return `    <wp:term>
-      <wp:term_id>${PRIMARY_MENU_TERM_ID}</wp:term_id>
+      <wp:term_id>${termId}</wp:term_id>
       <wp:term_taxonomy><![CDATA[nav_menu]]></wp:term_taxonomy>
-      <wp:term_slug><![CDATA[${PRIMARY_MENU_SLUG}]]></wp:term_slug>
+      <wp:term_slug><![CDATA[${slug}]]></wp:term_slug>
       <wp:term_parent><![CDATA[]]></wp:term_parent>
-      <wp:term_name><![CDATA[${PRIMARY_MENU_NAME}]]></wp:term_name>
+      <wp:term_name><![CDATA[${name}]]></wp:term_name>
     </wp:term>`;
+}
+
+// Flat (depth=0) nav menu items for the "Footer Quick Links" menu. Each
+// item is assigned to the FOOTER_QUICK_LINKS term so it lands under the
+// right menu in Appearance → Menus.
+function buildFooterQuickLinksItems(
+  items: NavItem[],
+  postIdOffset: number,
+): string[] {
+  const out: string[] = [];
+  const filtered = items.filter((item) => !isStrippedScorpionLink(item.href));
+  filtered.forEach((item, i) => {
+    const postId = postIdOffset + i + 1;
+    const title = item.text || item.href || `Footer link ${i + 1}`;
+    out.push(
+      buildNavMenuItem({
+        postId,
+        menuOrder: i + 1,
+        title,
+        url: item.href,
+        parentId: 0,
+        menuSlug: FOOTER_QUICK_LINKS_SLUG,
+        menuName: FOOTER_QUICK_LINKS_NAME,
+      }),
+    );
+  });
+  return out;
 }
 
 function buildNavMenuItems(
@@ -357,6 +429,8 @@ function buildNavMenuItems(
         title,
         url: item.href,
         parentId,
+        menuSlug: PRIMARY_MENU_SLUG,
+        menuName: PRIMARY_MENU_NAME,
       }),
     );
   });
@@ -370,8 +444,10 @@ function buildNavMenuItem(args: {
   title: string;
   url: string;
   parentId: number;
+  menuSlug: string;
+  menuName: string;
 }): string {
-  const { postId, menuOrder, title, url, parentId } = args;
+  const { postId, menuOrder, title, url, parentId, menuSlug, menuName } = args;
   // Same dedupe-avoidance dance as page items — stagger by postId so the
   // importer doesn't collapse nav items that happen to share a title
   // (e.g. multiple "Contact Us" links in different menu locations).
@@ -410,7 +486,7 @@ function buildNavMenuItem(args: {
       <wp:post_type><![CDATA[nav_menu_item]]></wp:post_type>
       <wp:post_password><![CDATA[]]></wp:post_password>
       <wp:is_sticky>0</wp:is_sticky>
-      <category domain="nav_menu" nicename="${PRIMARY_MENU_SLUG}"><![CDATA[${PRIMARY_MENU_NAME}]]></category>
+      <category domain="nav_menu" nicename="${menuSlug}"><![CDATA[${menuName}]]></category>
 ${meta}
     </item>`;
 }
