@@ -26,6 +26,7 @@ import {
   buildPageTemplates,
   buildSinglePostTemplate,
 } from "./templates";
+import { buildThankYouRedirects } from "./thank-you-redirects";
 import {
   buildFunctionsPhp,
   buildHtaccessAdditions,
@@ -375,6 +376,8 @@ export async function buildWpPackage(
     buildStyleCss(inputs.siteTitle),
   );
 
+  const thankYouRedirects = buildThankYouRedirects(inputs.ingest.pages);
+
   await writeFile(
     join(themeDir, "functions.php"),
     buildFunctionsPhp({
@@ -392,6 +395,7 @@ export async function buildWpPackage(
       // schema in cpts/<system>.ts drives both the metabox PHP and the
       // matching WXR postmeta emission in wxr.ts.
       cptMetaboxes: [TESTIMONIAL_METABOX],
+      thankYouRedirects,
     }),
   );
 
