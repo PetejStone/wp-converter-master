@@ -39,11 +39,13 @@ export function buildCf7Forms(args: BuildCf7Args): Cf7Form[] {
       named,
       variant.submitText ?? "Submit",
     );
+    const attachments = buildAttachmentsList(named);
     const mailSerialized = buildMailSerialized({
       recipient,
       sender: fromSender,
       subject: `${args.siteTitle ?? "Site"} form submission`,
       fields: named,
+      attachments,
     });
     // If the form has an email field we can address, ship an active
     // auto-responder that thanks the submitter and echoes their inputs.
@@ -219,14 +221,56 @@ function numberRangeModifier(field: FormField): string {
   return parts.length > 0 ? " " + parts.join(" ") : "";
 }
 
+// CF7's filetypes modifier is a pipe-separated list of file *extensions* —
+// it builds a server-side regex `/\.(jpg|pdf|...)$/i` to validate uploads.
+// Browser `accept` values are a mixed bag: dotted extensions (".pdf"),
+// specific MIME types ("application/pdf"), and MIME wildcards ("image/*").
+// A naive strip of the MIME prefix turns "image/*" into a literal "*"
+// which lands in CF7's regex as `/\.(*|pdf|…)$/i` — invalid (`*` quantifier
+// with nothing to repeat) and PHP rejects the whole pattern, causing every
+// upload validation to error out. Resolve each entry to concrete extensions
+// and drop anything that can't be mapped.
 function normalizeAccept(accept: string): string {
-  // CF7 wants pipe-separated extensions without dots: "jpg|png|gif"
-  return accept
-    .split(",")
-    .map((s) => s.trim().replace(/^\./, "").replace(/^.+\//, ""))
-    .filter((s) => s.length > 0)
-    .join("|");
+  const tokens = new Set<string>();
+  for (const raw of accept.split(",")) {
+    const s = raw.trim().toLowerCase();
+    if (s === "") continue;
+
+    const wildcard = MIME_WILDCARD_EXTENSIONS[s];
+    if (wildcard) {
+      wildcard.forEach((e) => tokens.add(e));
+      continue;
+    }
+    const specific = MIME_TO_EXTENSIONS[s];
+    if (specific) {
+      specific.forEach((e) => tokens.add(e));
+      continue;
+    }
+    const ext = s.match(/^\.?([a-z0-9]+)$/);
+    if (ext) {
+      tokens.add(ext[1]);
+      continue;
+    }
+    // Unknown MIME ("application/octet-stream", "foo/bar"): skip rather
+    // than emit something CF7 can't parse.
+  }
+  return [...tokens].join("|");
 }
+
+const MIME_WILDCARD_EXTENSIONS: Record<string, string[]> = {
+  "image/*": ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "svg"],
+  "video/*": ["mp4", "mov", "webm", "avi", "mkv"],
+  "audio/*": ["mp3", "wav", "ogg", "m4a", "aac"],
+};
+
+const MIME_TO_EXTENSIONS: Record<string, string[]> = {
+  "application/pdf": ["pdf"],
+  "application/msword": ["doc"],
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ["docx"],
+  "text/plain": ["txt"],
+  "text/csv": ["csv"],
+  "application/zip": ["zip"],
+};
 
 // CF7 stores _mail as a PHP-serialized associative array. We emit a
 // sensible default; admins customise per-form in wp-admin → Contact.
@@ -235,6 +279,7 @@ function buildMailSerialized(args: {
   sender: string;
   subject: string;
   fields: NamedField[];
+  attachments: string;
 }): string {
   const bodyLines = ["A form on the website was submitted.", ""];
   for (const nf of args.fields) {
@@ -255,10 +300,23 @@ function buildMailSerialized(args: {
     recipient: args.recipient,
     body,
     additional_headers: replyTo,
-    attachments: "",
+    attachments: args.attachments,
     use_html: false,
     exclude_blank: false,
   });
+}
+
+// CF7's `_mail.attachments` is a newline-separated list of form-tag refs
+// (e.g. `[resume]\n[cover_letter]`). When empty CF7 sends the email with
+// no attachments even if the form has [file] inputs and the user uploaded
+// a file — the upload is validated and stored in CF7's temp dir but never
+// reaches PHPMailer. We populate this from every named file field so the
+// admin notification email carries the submitted file(s).
+function buildAttachmentsList(fields: NamedField[]): string {
+  return fields
+    .filter((nf) => nf.field.tag === "input" && nf.field.inputType === "file")
+    .map((nf) => `[${nf.cf7Name}]`)
+    .join("\n");
 }
 
 // CF7's Mail (2) auto-responder — the email the *submitter* receives.

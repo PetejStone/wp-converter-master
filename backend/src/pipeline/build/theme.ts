@@ -1,4 +1,5 @@
 import { buildCptMetaboxPhp, type CptMetaboxSpec } from "./cpt-metabox";
+import type { ThankYouRedirects } from "./thank-you-redirects";
 
 export const THEME_SLUG = "scorpion-converted";
 
@@ -30,6 +31,12 @@ export interface ThemeInputs {
   // post type (see cpt-metabox.ts / cpts/<system>.ts). Empty array
   // means no system CPTs were emitted.
   cptMetaboxes: CptMetaboxSpec[];
+  // CF7 mail-sent redirect targets, built from the ingest page list.
+  // Drives the wp_footer JS handler that navigates form submitters to
+  // either the host page's own thank-you child or a site-wide fallback
+  // (typically /contact-us/thank-you/). Empty map + null fallback skips
+  // emitting the handler entirely.
+  thankYouRedirects: ThankYouRedirects;
 }
 
 // Apache rewrite snippet that ships alongside the export. The theme's
@@ -116,6 +123,8 @@ export function buildFunctionsPhp(inputs: ThemeInputs): string {
     inputs.cptMetaboxes.length > 0
       ? "\n" + inputs.cptMetaboxes.map(buildCptMetaboxPhp).join("\n")
       : "";
+
+  const thankYouRedirectPhp = buildThankYouRedirectPhp(inputs.thankYouRedirects);
 
   return `<?php
 /**
@@ -241,7 +250,7 @@ add_filter('wpcf7_form_elements', function ($html) {
     );
     return $html;
 });
-
+${thankYouRedirectPhp}
 /**
  * Register the theme's nav menu locations. The wordpress-importer plugin
  * imports the nav_menu_item posts from the WXR; this hook tells WP which
@@ -852,6 +861,59 @@ function phpStringArray(values: string[]): string {
   if (values.length === 0) return "array()";
   const inner = values.map((v) => `'${escapePhp(v)}'`).join(", ");
   return `array(${inner})`;
+}
+
+// PHP snippet that hooks `wp_footer` to print a tiny IIFE listening for
+// CF7's `wpcf7mailsent` event and navigating the user to a thank-you page.
+// The lookup is map-first (page path → child "thank-you/" page captured at
+// ingest) with a site-wide fallback (typically /contact-us/thank-you/).
+// Returns an empty string when there's no map and no fallback so the hook
+// isn't registered at all on sites without any thank-you pages.
+function buildThankYouRedirectPhp(redirects: ThankYouRedirects): string {
+  const hasMap = redirects.perPage.size > 0;
+  const hasFallback = redirects.fallback !== null;
+  if (!hasMap && !hasFallback) return "";
+
+  const mapObj: Record<string, string> = {};
+  for (const [from, to] of redirects.perPage) {
+    mapObj[from] = to;
+  }
+  const mapJson = JSON.stringify(mapObj);
+  const fallbackJson = JSON.stringify(redirects.fallback);
+
+  return `
+/**
+ * Redirect CF7 submitters to a thank-you page on successful mail-sent.
+ *
+ * The per-page map is built at conversion time from every Scorpion page
+ * whose path has a direct "thank-you/" child. When the form's host page
+ * isn't in the map we fall back to the site-wide thank-you URL (auto-
+ * selected at build time, preferring /contact-us/thank-you/).
+ *
+ * Wired via wp_footer so the inline payload always renders after CF7's
+ * own scripts have bound their event listeners.
+ */
+add_action('wp_footer', function () {
+    if (is_admin()) {
+        return;
+    }
+    ?>
+    <script>
+    (function () {
+      var perPage = ${mapJson};
+      var fallback = ${fallbackJson};
+      document.addEventListener('wpcf7mailsent', function () {
+        var here = window.location.pathname.replace(/\\/?$/, '/');
+        var target = perPage[here] || fallback;
+        if (target) {
+          window.location.href = target;
+        }
+      });
+    })();
+    </script>
+    <?php
+});
+`;
 }
 
 function escapeCssComment(value: string): string {
