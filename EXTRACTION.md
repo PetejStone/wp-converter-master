@@ -59,7 +59,7 @@ Crawl every page URL from `#SiteMapListTable`. Every page gets the same treatmen
 - All `<style>` tag text content — Scorpion sites inject 30–50 KB of per-site theme tokens (CSS custom properties for colours, spacing, typography) inline; a link-only capture path misses this and breaks visual accuracy
 - All `<script src="...">` values anywhere in the document
 - All image `src` and `srcset` values
-- The `<nav>` element and its full inner HTML
+- The primary navigation menu — see Step 5 for how it's selected (the `[role="menubar"]` subtree, not the whole `<nav>`)
 
 > Hostname filtering happens in the parse stage, not the crawl stage. The crawler captures every matching URL; the parser decides what's same-origin and what's third-party.
 
@@ -140,8 +140,13 @@ Run against every crawled page. Navigation can vary per page — this must be de
 
 ```
 For each crawled page:
-  1. Find the primary <nav> element
-     - Use the first <nav> found, or the one with the most <a> children if multiple exist
+  1. Find the primary menu
+     - PREFER the [role="menubar"] subtree (Scorpion marks the desktop
+       menu's root <ul> with role="menubar"; its nested role="menu" <ul>s
+       hold the flyout sub-items). Capture that element's outerHTML.
+       If several menubars exist, use the one with the most <a> children.
+     - FALL BACK to the largest <nav>'s inner HTML only when no menubar
+       exists at all (non-Scorpion / atypical markup).
   2. Extract all <a> elements within it: { href, text }
   3. Infer hierarchy from ul > li > ul nesting depth
   4. Normalise hrefs — convert absolute URLs to root-relative paths
@@ -153,6 +158,17 @@ After all pages processed:
   3. If variations exist → collect unique nav variants, flag in review wizard
      → user selects which becomes the WordPress primary menu
 ```
+
+> **Why the menubar subtree, not the whole `<nav>`.** An earlier "most `<a>`
+> children" heuristic pulled in far too much. After JS hydration the desktop
+> nav's enclosing `<nav>` also contains the **mobile drawer** — a flattened
+> duplicate of the menu interleaved with `"Main Menu"` section-header links —
+> plus the header's **social / phone / maps** links. On the Tennessee Plumbing
+> test site that produced **58** menu items (with duplicates, empty-href
+> headers, and Facebook/Instagram/tel: links) instead of the real **23**. The
+> `[role="menubar"]` subtree is exactly the hierarchical desktop menu and
+> nothing else, so capturing it directly yields a clean menu with correct
+> depth nesting. The selection lives in `pipeline/crawl/crawl-page.ts`.
 
 ---
 

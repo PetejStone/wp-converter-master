@@ -7,6 +7,7 @@ type ArchiverErrorLike = Error & { code?: string };
 export async function zipDirectory(
   sourceDir: string,
   destZipPath: string,
+  opts: { rootFolderName?: string } = {},
 ): Promise<{ byteSize: number }> {
   await new Promise<void>((resolve, reject) => {
     const output = createWriteStream(destZipPath);
@@ -21,7 +22,10 @@ export async function zipDirectory(
     });
 
     archive.pipe(output);
-    archive.directory(sourceDir, false);
+    // `false` puts the directory's contents at the zip root (the export.zip
+    // case). A folder name nests them under that folder — required for a WP
+    // plugin zip, whose contents must live under a top-level plugin folder.
+    archive.directory(sourceDir, opts.rootFolderName ?? false);
     archive.finalize();
   });
 

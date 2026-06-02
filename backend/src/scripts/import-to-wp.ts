@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { desc, eq, isNotNull } from "drizzle-orm";
 import { closeDb, db } from "../db/client";
 import { jobs } from "../db/schema";
+import { MIGRATION_HELPER_SLUG } from "../pipeline/build/migration-helper-plugin";
 
 const WP_HOST_PORT = 8080;
 const WP_CONTAINER = "scorpion-wp-converter-wp";
@@ -82,6 +83,14 @@ async function main() {
   const argv = process.argv.slice(2);
   const jobIdArg = argv.find((a) => !a.startsWith("--"));
   const clean = argv.includes("--clean");
+  // --via-plugin drives the entire migration through the generated
+  // scorpion-migration-helper plugin (PHP) instead of the wp-cli steps below.
+  // This is the real end-to-end test of the one-click flow a non-technical
+  // user runs: the plugin must install every required plugin, register the
+  // CPTs, import the WXR, wire redirects + menus, and pin the front page —
+  // all from PHP, with no wp-cli scaffolding. Combine with --clean for a
+  // from-scratch run: `npm run wp:import -- --via-plugin --clean`.
+  const viaPlugin = argv.includes("--via-plugin");
 
   // ---- 1. Pick a job ----
   let job;
@@ -227,6 +236,94 @@ async function main() {
     ]);
   } else {
     console.log("\n(no media to copy)");
+  }
+
+  // ---- 6′. (--via-plugin) Drive the migration through the helper plugin ----
+  // End-to-end test of scorpion-migration-helper: copy it into the container,
+  // activate it, and run smh_run_migration() over wp eval so every step
+  // (plugin install, CPT registration, WXR import, redirects, menus, front
+  // page) executes from PHP exactly as it would when a user clicks "Run
+  // migration" in wp-admin. Returns early — the wp-cli steps below are the
+  // alternative path and must not also run.
+  if (viaPlugin) {
+    const helperSrc = join(outputDir, MIGRATION_HELPER_SLUG);
+    if (!existsSync(helperSrc)) {
+      console.error(
+        `Helper plugin not found at ${helperSrc} — re-run the conversion to regenerate the export.`,
+      );
+      process.exit(1);
+    }
+
+    console.log("\n[--via-plugin] Copying helper plugin into WP container…");
+    docker([
+      "exec",
+      WP_CONTAINER,
+      "rm",
+      "-rf",
+      `/var/www/html/wp-content/plugins/${MIGRATION_HELPER_SLUG}`,
+    ]);
+    docker(["cp", helperSrc, `${WP_CONTAINER}:/var/www/html/wp-content/plugins/`]);
+    docker([
+      "exec",
+      WP_CONTAINER,
+      "chown",
+      "-R",
+      "www-data:www-data",
+      `/var/www/html/wp-content/plugins/${MIGRATION_HELPER_SLUG}`,
+    ]);
+
+    console.log("[--via-plugin] Activating helper plugin…");
+    wpCli(["plugin", "activate", MIGRATION_HELPER_SLUG]);
+
+    console.log(
+      "[--via-plugin] Running smh_run_migration() — installs plugins + imports content from PHP…",
+    );
+    // Print one tab-separated row per step, then halt non-zero if any step
+    // reported 'error' so this verification fails loudly in CI / locally.
+    const evalPhp = [
+      "$log = smh_run_migration();",
+      "$bad = 0;",
+      'foreach ($log as $r) { echo $r[0] . "\\t" . strtoupper($r[1]) . "\\t" . $r[2] . "\\n"; if ($r[1] === "error") { $bad++; } }',
+      'if ($bad > 0) { WP_CLI::halt(1); }',
+    ].join(" ");
+    const log = wpCli(["eval", evalPhp], { capture: true });
+    console.log("\nStep\tStatus\tDetail");
+    console.log(log.trim());
+
+    // The plugin installs WP Mail SMTP but (by design) leaves SMTP creds to
+    // the admin. Point it at Mailpit here so staging form-mail tests still
+    // deliver — mirrors the wp-cli path's step 6b.1 configuration.
+    console.log("\n[--via-plugin] Pointing WP Mail SMTP at Mailpit…");
+    const mailpitConfig = JSON.stringify({
+      mail: {
+        from_email: "noreply@scorpion.test",
+        from_name: "Scorpion Test",
+        from_email_force: false,
+        from_name_force: false,
+        mailer: "smtp",
+        return_path: false,
+      },
+      smtp: {
+        autotls: false,
+        auth: false,
+        host: "mailpit",
+        port: 1025,
+        encryption: "none",
+        user: "",
+        pass: "",
+      },
+    });
+    wpCli(["option", "update", "wp_mail_smtp", mailpitConfig, "--format=json"]);
+
+    console.log("\n✅ [--via-plugin] Plugin-driven migration complete.");
+    console.log(`   Public:  http://localhost:${WP_HOST_PORT}/`);
+    console.log(
+      `   Admin:   http://localhost:${WP_HOST_PORT}/wp-admin/ (user: ${ADMIN_USER} / pass: ${ADMIN_PASS})`,
+    );
+    console.log(
+      `   Helper:  http://localhost:${WP_HOST_PORT}/wp-admin/tools.php?page=scorpion-migration`,
+    );
+    return;
   }
 
   // ---- 6. Install + activate the WordPress Importer plugin ----

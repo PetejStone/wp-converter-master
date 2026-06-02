@@ -33,9 +33,30 @@ export.zip
 │   ├── utility-1.js                   resolves as a static file on hosts that 404
 │   └── ...                            unknown paths before reaching PHP
 ├── import.xml                       ← WXR file for WordPress importer
+├── cptui-export.json                ← CPT UI schema for Scorpion-system post types
+├── redirects.csv                    ← Redirection import (only when the site had 301s)
+├── scorpion-migration-helper/       ← One-click setup plugin (loose folder, for SFTP)
+│   ├── scorpion-migration-helper.php
+│   └── data/                        ← import.xml + cptui-export.json (+ redirects.csv)
+├── scorpion-migration-helper.zip    ← Same plugin, zipped for Plugins → Upload Plugin
 ├── htaccess-additions.txt           ← Apache rewrite snippet (alternative for Apache hosts)
 └── MIGRATION-CHECKLIST.md           ← Post-import steps for the user
 ```
+
+> **Plugins cannot travel inside the WXR.** A WordPress export is a content-only
+> format (pages, posts, menus, terms, postmeta) — there is no field that installs
+> or activates a plugin. The converted content depends on several plugins (CF7 for
+> forms, Custom Post Type UI for system CPTs, Yoast for the SEO meta keys,
+> Complianz, Redirection, the WordPress Importer itself). The
+> `scorpion-migration-helper` plugin closes that gap: a non-technical user uploads
+> it, clicks **Run migration**, and it installs+activates the required plugins from
+> the WP.org repo and then runs the WXR import — the GUI equivalent of the
+> `scripts/import-to-wp.ts` wp-cli automation. Module: `pipeline/build/migration-helper-plugin.ts`.
+>
+> One ordering rule the helper enforces: the CPT UI schema must be applied **and
+> the post types registered in the same request** before the WXR import runs —
+> `WP_Import` silently skips any `<item>` whose `post_type` isn't registered, which
+> would drop every `scorpion_testimonial`.
 
 ---
 

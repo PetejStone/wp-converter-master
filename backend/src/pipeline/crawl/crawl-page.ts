@@ -167,15 +167,44 @@ function extractInPage(): InPageExtraction {
     }
   });
 
-  const navs = Array.from(document.querySelectorAll("nav"));
-  let primaryNav: Element | null = null;
-  let maxLinks = -1;
-  for (const nav of navs) {
-    const count = nav.querySelectorAll("a").length;
-    if (count > maxLinks) {
-      maxLinks = count;
-      primaryNav = nav;
+  // Capture the desktop primary menu. Scorpion (following the ARIA pattern)
+  // marks the desktop menu's root <ul> with role="menubar", and its nested
+  // role="menu" <ul>s hold the flyout sub-items — so the menubar subtree IS
+  // the complete hierarchical menu, and nothing else. We grab that subtree's
+  // outerHTML directly rather than the enclosing <nav>, because after JS
+  // hydration the <nav> ALSO contains the mobile drawer (a flattened
+  // duplicate of the menu interleaved with "Main Menu" section-header links)
+  // and the header's social / phone / maps links. Selecting the <nav> — or
+  // the nav with the most <a>, the old heuristic — swept all of that into the
+  // WordPress menu (e.g. 58 polluted items vs the real 23). Pick the richest
+  // menubar if a page has several. Only when no menubar exists at all do we
+  // fall back to the largest <nav>'s inner HTML (non-Scorpion / atypical
+  // markup) so non-USC pages still get a best-effort nav.
+  const menubars = Array.from(document.querySelectorAll('[role="menubar"]'));
+  let navHtml: string | null = null;
+  if (menubars.length > 0) {
+    let bestMenubar = menubars[0];
+    let bestMenubarLinks = -1;
+    for (const mb of menubars) {
+      const count = mb.querySelectorAll("a").length;
+      if (count > bestMenubarLinks) {
+        bestMenubarLinks = count;
+        bestMenubar = mb;
+      }
     }
+    navHtml = bestMenubar.outerHTML;
+  } else {
+    const navs = Array.from(document.querySelectorAll("nav"));
+    let primaryNav: Element | null = null;
+    let maxLinks = -1;
+    for (const nav of navs) {
+      const count = nav.querySelectorAll("a").length;
+      if (count > maxLinks) {
+        maxLinks = count;
+        primaryNav = nav;
+      }
+    }
+    navHtml = primaryNav ? primaryNav.innerHTML : null;
   }
 
   return {
@@ -183,6 +212,6 @@ function extractInPage(): InPageExtraction {
     scriptUrls,
     imageUrls,
     inlineStyles,
-    navHtml: primaryNav ? primaryNav.innerHTML : null,
+    navHtml,
   };
 }

@@ -20,6 +20,10 @@ import { buildMigrationChecklist } from "./checklist";
 import { buildCptUiExport } from "./cpt-ui-export";
 import { TESTIMONIAL_METABOX } from "./cpts/testimonials";
 import { buildPageHierarchy } from "./hierarchy";
+import {
+  buildMigrationHelperPlugin,
+  MIGRATION_HELPER_SLUG,
+} from "./migration-helper-plugin";
 import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
 import {
   buildErrorTemplates,
@@ -531,6 +535,51 @@ export async function buildWpPackage(
   await writeFile(
     join(outputDir, "cptui-export.json"),
     JSON.stringify(buildCptUiExport(), null, 2) + "\n",
+  );
+
+  // One-click migration helper plugin. A WordPress export (import.xml) is a
+  // content-only format — it can't carry the plugins the converted content
+  // depends on (CF7 for forms, CPT UI for testimonials, Yoast for the SEO
+  // meta keys, …). This self-contained plugin installs+activates them and
+  // runs the import from a wp-admin button, so a non-technical user finishes
+  // the migration without shell access. It's the GUI equivalent of
+  // scripts/import-to-wp.ts (the wp-cli automation used for local staging).
+  //
+  // Shipped two ways from the same folder: (1) the loose folder, for users
+  // who drop it straight into wp-content/plugins/ over SFTP, and (2) a
+  // <slug>.zip with the contents nested under the plugin folder, for upload
+  // via Plugins → Add New → Upload Plugin. The WXR + CPT schema (+ redirects
+  // CSV when present) are copied into the plugin's data/ dir so everything
+  // travels together in one upload.
+  const hasRedirects = inputs.ingest.redirects.length > 0;
+  const helperDir = join(outputDir, MIGRATION_HELPER_SLUG);
+  const helperDataDir = join(helperDir, "data");
+  await mkdir(helperDataDir, { recursive: true });
+  await writeFile(
+    join(helperDir, `${MIGRATION_HELPER_SLUG}.php`),
+    buildMigrationHelperPlugin({
+      siteTitle: inputs.siteTitle,
+      hasRedirects,
+    }),
+  );
+  await copyFile(
+    join(outputDir, "import.xml"),
+    join(helperDataDir, "import.xml"),
+  );
+  await copyFile(
+    join(outputDir, "cptui-export.json"),
+    join(helperDataDir, "cptui-export.json"),
+  );
+  if (hasRedirects) {
+    await copyFile(
+      join(outputDir, "redirects.csv"),
+      join(helperDataDir, "redirects.csv"),
+    );
+  }
+  await zipDirectory(
+    helperDir,
+    join(outputDir, `${MIGRATION_HELPER_SLUG}.zip`),
+    { rootFolderName: MIGRATION_HELPER_SLUG },
   );
 
   const totalZones = inputs.contentZones.reduce(
