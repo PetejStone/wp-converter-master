@@ -1,14 +1,24 @@
+import { createHash } from "node:crypto";
 import type { FormField, FormVariant } from "../parse";
 
 // Output of buildCf7Forms — one entry per FormVariant. The WXR builder
 // emits a wpcf7_contact_form post per entry; templates.ts swaps each
-// Scorpion contact form with [contact-form-7 id="<postId>" …] by looking
+// Scorpion contact form with [contact-form-7 id="<hash>" …] by looking
 // the variant fingerprint up in formIdToCf7Lookup.
 export interface Cf7Form {
   postId: number;
   slug: string;
   title: string;
   fingerprint: string;
+  // Stable lowercase-hex identifier emitted as the CF7 `_hash` postmeta and
+  // referenced as the shortcode `id`. CF7 (5.8+) resolves
+  // [contact-form-7 id="<hash>"] by REGEXP-matching this meta — see
+  // wpcf7_get_contact_form_by_hash(). That match survives the WordPress
+  // Importer reassigning post_ids on a non-empty target DB, unlike a numeric
+  // post id, and can't collide with a pre-existing form that happens to share
+  // a title. Must satisfy CF7's /^[0-9a-f]{7,}$/ validator; a sha256 hex
+  // digest of the variant fingerprint does, and is deterministic per form.
+  hash: string;
   formTagMarkup: string;
   mailSerialized: string;
   // Auto-responder ("Mail (2)") — sends a thank-you back to the submitter.
@@ -66,6 +76,8 @@ export function buildCf7Forms(args: BuildCf7Args): Cf7Form[] {
       slug,
       title,
       fingerprint: variant.fingerprint,
+      // Deterministic per-variant hex hash → CF7 `_hash` + shortcode id.
+      hash: createHash("sha256").update(variant.fingerprint).digest("hex"),
       formTagMarkup,
       mailSerialized,
       mail2Serialized,

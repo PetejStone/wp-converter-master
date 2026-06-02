@@ -212,6 +212,88 @@ function smh_install_activate($slug) {
 }
 
 /**
+ * Coerce a CPT UI option value to a real bool. CPT UI stores every flag as
+ * the *string* "true"/"false" (not a JSON boolean) in its option/export, so a
+ * naive (bool) cast turns "false" into true. Falls back to $default for
+ * anything unrecognised.
+ */
+function smh_cptui_bool($value, $default = false) {
+    if ($value === true || $value === 'true' || $value === '1' || $value === 1) {
+        return true;
+    }
+    if ($value === false || $value === 'false' || $value === '0' || $value === 0) {
+        return false;
+    }
+    return $default;
+}
+
+/**
+ * Guarantee every post type declared in the bundled cptui-export.json is
+ * registered in THIS request, mirroring the JSON definition. The WXR import
+ * skips any <item> whose post_type isn't registered — WP_Import prints
+ * "Invalid post type" and moves on — so the scorpion_testimonial entries
+ * vanish silently if the type isn't live by the time the import runs.
+ *
+ * We deliberately do NOT trust CPT UI's own registrar to have run. On a
+ * locked-down managed host (e.g. GoDaddy) the CPT UI install can fail, the
+ * installed CPT UI may be a version whose registrar reads the option in a
+ * different shape, or a persistent object cache may serve a stale empty
+ * cptui_post_types option immediately after we write it — each drops the
+ * testimonials. For every declared type still missing we register it directly
+ * from the same JSON, so the admin also gets a correctly-configured screen
+ * when CPT UI is absent. Idempotent: types already registered are untouched.
+ *
+ * Returns the slugs this function had to register itself (empty when CPT UI
+ * already covered them).
+ */
+function smh_register_bundled_cpts() {
+    $file = smh_data_file('cptui-export.json');
+    if (!$file) {
+        return array();
+    }
+    $data = json_decode(file_get_contents($file), true);
+    if (!is_array($data) || !isset($data['post_types']) || !is_array($data['post_types'])) {
+        return array();
+    }
+
+    $forced = array();
+    foreach ($data['post_types'] as $key => $def) {
+        if (!is_array($def)) {
+            continue;
+        }
+        $slug = (isset($def['name']) && $def['name'] !== '') ? (string) $def['name'] : (string) $key;
+        if ($slug === '' || post_type_exists($slug)) {
+            continue;
+        }
+
+        $args = array(
+            'public'              => smh_cptui_bool(isset($def['public']) ? $def['public'] : null, false),
+            'publicly_queryable'  => smh_cptui_bool(isset($def['publicly_queryable']) ? $def['publicly_queryable'] : null, false),
+            'show_ui'             => smh_cptui_bool(isset($def['show_ui']) ? $def['show_ui'] : null, true),
+            'show_in_menu'        => smh_cptui_bool(isset($def['show_in_menu']) ? $def['show_in_menu'] : null, true),
+            'show_in_rest'        => smh_cptui_bool(isset($def['show_in_rest']) ? $def['show_in_rest'] : null, false),
+            'exclude_from_search' => smh_cptui_bool(isset($def['exclude_from_search']) ? $def['exclude_from_search'] : null, false),
+            'has_archive'         => smh_cptui_bool(isset($def['has_archive']) ? $def['has_archive'] : null, false),
+            'hierarchical'        => smh_cptui_bool(isset($def['hierarchical']) ? $def['hierarchical'] : null, false),
+            'label'               => isset($def['label']) ? $def['label'] : $slug,
+        );
+        if (isset($def['labels']) && is_array($def['labels']) && !empty($def['labels'])) {
+            $args['labels'] = $def['labels'];
+        }
+        $args['supports'] = (isset($def['supports']) && is_array($def['supports']) && !empty($def['supports']))
+            ? $def['supports']
+            : array('title');
+        if (isset($def['menu_icon']) && $def['menu_icon'] !== '') {
+            $args['menu_icon'] = $def['menu_icon'];
+        }
+
+        register_post_type($slug, $args);
+        $forced[] = $slug;
+    }
+    return $forced;
+}
+
+/**
  * Apply the bundled CPT UI schema and register the post types in THIS request.
  * Critical: WP_Import skips any <item> whose post_type isn't registered, and
  * CPT UI only registers on 'init' (which already fired before this admin POST
@@ -236,25 +318,69 @@ function smh_import_cptui() {
     }
 
     // Register for the current request so the import below doesn't skip
-    // scorpion_* items. Prefer CPT UI's own registrar (honours every option);
-    // fall back to a minimal register_post_type so the import still lands.
+    // scorpion_* items. Prefer CPT UI's own registrar (honours every option)
+    // when present...
     if (function_exists('cptui_create_custom_post_types')) {
         cptui_create_custom_post_types();
-    } else if (isset($data['post_types']) && is_array($data['post_types'])) {
-        foreach ($data['post_types'] as $slug => $def) {
-            if (post_type_exists($slug)) {
-                continue;
-            }
-            $label = isset($def['label']) ? $def['label'] : $slug;
-            register_post_type($slug, array(
-                'public'  => true,
-                'label'   => $label,
-                'show_ui' => true,
-            ));
+    }
+    // ...then ALWAYS guarantee each declared type is live, whether or not CPT
+    // UI ran or its registrar actually registered it (see
+    // smh_register_bundled_cpts for the managed-host failure modes this
+    // covers). This is what keeps the testimonials from being dropped.
+    $forced = smh_register_bundled_cpts();
+
+    $declared = isset($data['post_types']) && is_array($data['post_types'])
+        ? $data['post_types']
+        : array();
+    $missing = array();
+    foreach ($declared as $key => $def) {
+        $slug = (is_array($def) && isset($def['name']) && $def['name'] !== '')
+            ? (string) $def['name']
+            : (string) $key;
+        if ($slug !== '' && !post_type_exists($slug)) {
+            $missing[] = $slug;
         }
     }
+    if (!empty($missing)) {
+        return array('Custom post types (CPT UI)', 'error', 'Could not register post type(s): ' . implode(', ', $missing) . ' — testimonials will not import.');
+    }
 
-    return array('Custom post types (CPT UI)', 'ok', 'Schema applied and post types registered.');
+    $detail = empty($forced)
+        ? 'Schema applied; CPT UI registered the post types.'
+        : 'Schema applied; registered directly (CPT UI registrar absent or incomplete): ' . implode(', ', $forced) . '.';
+    return array('Custom post types (CPT UI)', 'ok', $detail);
+}
+
+/**
+ * Empty existing nav-menu items before a (re)import so re-running the
+ * migration never stacks duplicate navigation links. This is what makes the
+ * "Run migration" button genuinely safe to click again.
+ *
+ * The WordPress Importer de-duplicates pages, posts, forms, and testimonials
+ * on its own — it matches them on title + date and skips ones that already
+ * exist — but it does NOT de-duplicate nav_menu_item posts: those carry blank
+ * titles, so its matcher can't find the existing ones and every re-run appends
+ * a second full set of menu links. We delete the existing items first; the
+ * menus themselves (the nav_menu terms) are kept — the importer de-duplicates
+ * those on slug, and smh_assign_menus re-attaches them to their theme
+ * locations after the import — so each menu repopulates exactly once.
+ *
+ * No-op on a first run (there are no items yet). Note: this also clears any
+ * menu items an admin added by hand after the first migration; re-running the
+ * migration is "redo the migration", so that is expected. Returns the number
+ * of items removed (0 on a first run).
+ */
+function smh_reset_imported_menus() {
+    $items = get_posts(array(
+        'post_type'   => 'nav_menu_item',
+        'post_status' => 'any',
+        'numberposts' => -1,
+        'fields'      => 'ids',
+    ));
+    foreach ($items as $id) {
+        wp_delete_post($id, true);
+    }
+    return count($items);
 }
 
 /**
@@ -284,6 +410,18 @@ function smh_import_wxr() {
         return array('Content import (WXR)', 'error', 'WordPress Importer is not available — make sure the plugin step above succeeded, then retry.');
     }
 
+    // Final safety net: ensure every bundled CPT is registered before the
+    // importer walks the items — WP_Import drops any item with an
+    // unregistered post_type. smh_import_cptui already does this, but
+    // re-ensuring here keeps the import correct even if the steps are
+    // reordered or this step is ever run on its own. Idempotent.
+    smh_register_bundled_cpts();
+
+    // Idempotency: clear existing menu items so a re-run repopulates the
+    // navigation exactly once instead of stacking duplicates. The importer
+    // de-duplicates everything else (pages/posts/forms/testimonials) itself.
+    $cleared_menu_items = smh_reset_imported_menus();
+
     @set_time_limit(0);
     $importer = new WP_Import();
     $importer->fetch_attachments = false;
@@ -294,7 +432,11 @@ function smh_import_wxr() {
     $importer->import($file);
     ob_end_clean();
 
-    return array('Content import (WXR)', 'ok', 'Pages, posts, menus, testimonials, and SEO meta imported.');
+    $detail = 'Pages, posts, menus, testimonials, and SEO meta imported.';
+    if ($cleared_menu_items > 0) {
+        $detail .= ' (Re-run: cleared ' . $cleared_menu_items . ' old menu item(s) first so the navigation was not duplicated.)';
+    }
+    return array('Content import (WXR)', 'ok', $detail);
 }
 
 /**

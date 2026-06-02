@@ -27,6 +27,9 @@ export interface BuiltTemplates {
 export interface Cf7Lookup {
   postId: number;
   title: string;
+  // CF7 _hash for the variant — used as the shortcode `id`. See
+  // cf7-forms.ts Cf7Form.hash.
+  hash: string;
 }
 
 // One PHP template per page. Pages that share a Scorpion Template value
@@ -332,16 +335,20 @@ function buildPageTemplate(
   //   4. Fall back to whole-form replacement when no inner div matches —
   //      preserves coverage for sites that don't follow this markup.
   // Replacement strings are stashed in a sidecar map and re-injected after
-  // cheerio serializes (cheerio escapes raw <?php). The shortcode includes
-  // both `id` (preferred) and `title` (fallback for when the wordpress-
-  // importer reassigns post_ids on a dirty target DB), plus html_id /
-  // html_class so the rendered CF7 <form> can be styled alongside the
-  // original Scorpion classes.
+  // cheerio serializes (cheerio escapes raw <?php). The shortcode `id` carries
+  // the CF7 form HASH (not the numeric post id): CF7 5.8+ resolves
+  // [contact-form-7 id="<hash>"] by REGEXP-matching the form's _hash postmeta,
+  // which survives the wordpress-importer reassigning post_ids on a non-empty
+  // target DB — a numeric id would point at the wrong post (or none) and fall
+  // back to a title lookup that collides with any pre-existing form sharing
+  // the title (e.g. CF7's own "Contact form 1"), which is what made the
+  // default form show site-wide. `title` stays as a last-ditch fallback;
+  // html_id / html_class let the rendered CF7 <form> keep the Scorpion classes.
   const cf7Replacements = new Map<string, string>();
   const formsToUnwrap = new Set<unknown>();
 
   const makeShortcode = (lookup: Cf7Lookup): string =>
-    `<?php echo do_shortcode('[contact-form-7 id="${lookup.postId}" title="${escapePhpSingleQuotes(lookup.title)}" html_id="Form" html_class="ui-contact-form"]'); ?>`;
+    `<?php echo do_shortcode('[contact-form-7 id="${lookup.hash}" title="${escapePhpSingleQuotes(lookup.title)}" html_id="Form" html_class="ui-contact-form"]'); ?>`;
 
   // Scorpion uses different ids for the inner field-repeater across
   // sections — `<div id="Form" …>` on /contact-us/ but

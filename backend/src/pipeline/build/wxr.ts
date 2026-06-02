@@ -497,6 +497,10 @@ function buildCf7Item(form: Cf7Form): string {
   const pubDate = itemDate.toUTCString();
 
   const meta = [
+    // The shortcode references this hash as its `id`; CF7 resolves the form
+    // by REGEXP-matching _hash, so the swap survives post_id reassignment on
+    // a non-empty target DB. See cf7-forms.ts Cf7Form.hash.
+    postmetaRaw("_hash", form.hash),
     postmetaRaw("_form", form.formTagMarkup),
     postmetaRaw("_mail", form.mailSerialized),
     // Mail (2) auto-responder. Only emitted when the form has an

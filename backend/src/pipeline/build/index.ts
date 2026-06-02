@@ -444,7 +444,7 @@ export async function buildWpPackage(
   // fingerprinted into.
   const pathFormIdToCf7Lookup = new Map<
     string,
-    { postId: number; title: string }
+    { postId: number; title: string; hash: string }
   >();
   for (const cf7 of cf7Forms) {
     const variant = inputs.formAnalysis.variants.find(
@@ -456,6 +456,7 @@ export async function buildWpPackage(
       pathFormIdToCf7Lookup.set(`${occ.path}|${occ.formId}`, {
         postId: cf7.postId,
         title: cf7.title,
+        hash: cf7.hash,
       });
     }
   }
