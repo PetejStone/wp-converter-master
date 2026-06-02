@@ -383,6 +383,29 @@ function smh_set_front_page() {
 }
 
 /**
+ * Force pretty permalinks (/%postname%/) and rebuild the rewrite rules.
+ * Every converted page URL, menu link, and redirect is path-based, but a
+ * fresh WordPress defaults to "plain" permalinks (?p=123). On a plain
+ * install none of the pretty URLs resolve — WordPress serves the front page
+ * for every unrecognised path, so every page appears to render the home
+ * page. Setting this is mandatory for the converted site to work.
+ */
+function smh_set_permalinks() {
+    global $wp_rewrite;
+    $target = '/%postname%/';
+    if (get_option('permalink_structure') !== $target) {
+        update_option('permalink_structure', $target);
+    }
+    if (is_object($wp_rewrite)) {
+        $wp_rewrite->set_permalink_structure($target);
+        $wp_rewrite->flush_rules(true); // hard flush — also rewrites .htaccess on Apache
+    } else {
+        flush_rewrite_rules(true);
+    }
+    return array('Permalinks', 'ok', 'Set to /%postname%/ and rewrite rules flushed.');
+}
+
+/**
  * Run every migration step in order, collecting a (step, status, message)
  * row per step. Each step is wrapped so one failure never aborts the rest —
  * the admin sees exactly which steps succeeded and which need attention.
@@ -414,6 +437,7 @@ function smh_run_migration() {
     if (smh_data_file('redirects.csv')) {
         $steps[] = 'smh_import_redirects';
     }
+    $steps[] = 'smh_set_permalinks';
     $steps[] = 'smh_assign_menus';
     $steps[] = 'smh_set_front_page';
 
