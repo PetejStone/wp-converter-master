@@ -122,6 +122,46 @@ export function buildSinglePostTemplate(
   return { content: built.content };
 }
 
+// Build the generic theme page.php — the fallback WordPress uses for any
+// post_type=page that has no template of its own. Every crawled page gets a
+// dedicated page-<slug>.php (see buildPageTemplates), but a sitemap page that
+// failed to crawl produces no content zones and therefore no template; without
+// page.php such a page falls through to the bare index.php (which only calls
+// the_content() and, with no header.php/footer.php in this theme, renders no
+// site chrome) and looks broken. This reuses the first crawled page's captured
+// chrome — header, nav, footer are site-wide — and shows the page's own
+// content via the_content() in the primary content slot. Returns null only
+// when no page was crawled (then there's no chrome to borrow). Uses the first
+// page node in hierarchy order that has captured zones as the exemplar.
+export function buildPageFallbackTemplate(
+  zones: PageContentZones[],
+  hierarchy: PageHierarchy,
+  urlMap: Map<string, string>,
+  iconMap: Map<string, string>,
+  pathFormIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
+): { content: string } | null {
+  const zonesByPath = new Map<string, PageContentZones>();
+  for (const z of zones) zonesByPath.set(normalizePath(z.path), z);
+
+  const exemplarNode = hierarchy.nodes.find(
+    (n) => !n.isBlogPost && zonesByPath.has(normalizePath(n.path)),
+  );
+  if (!exemplarNode) return null;
+  const exemplarZones = zonesByPath.get(normalizePath(exemplarNode.path));
+  if (!exemplarZones) return null;
+
+  const built = buildPageTemplate(
+    exemplarZones,
+    "fallback",
+    "Page",
+    urlMap,
+    iconMap,
+    pathFormIdToCf7Lookup,
+    { omitHeader: true, fallbackTheContent: true },
+  );
+  return { content: built.content };
+}
+
 // Build the /error/404 and /error/500 pages as theme files (theme/404.php
 // and theme/500.php). These pages aren't navigable WP pages — they don't
 // appear in import.xml as items and don't get post_ids. Returns whichever
@@ -226,6 +266,17 @@ function buildPageTemplate(
      * lifecycle (Apache's ErrorDocument serves the file directly).
      */
     bootstrap?: string;
+    /**
+     * Build the generic theme page.php fallback from an exemplar page's
+     * captured chrome: replace the FIRST content-zone placeholder with
+     * `<?php the_content(); ?>` and drop the rest. A page that has no
+     * per-page template of its own (e.g. a sitemap page that failed to crawl,
+     * so no page-<slug>.php was generated) then still renders the real site
+     * chrome — header, nav, footer — with its own editable content in the
+     * primary content slot, instead of falling through to the bare index.php.
+     * Mutually exclusive with inlineZones.
+     */
+    fallbackTheContent?: boolean;
   } = {},
 ): PageTemplateOutput {
   let html = rewriteHtmlUrls(page.template, page.pageUrl, urlMap);
@@ -451,8 +502,17 @@ function buildPageTemplate(
   // `_scorpion_zone_<id>`, emitted by the WXR builder; the shortcode
   // handler reads it) or the captured zone HTML inline (when there's no
   // matching post for the handler to read meta from, e.g. error pages).
+  let fallbackContentEmitted = false;
   html = html.replace(PLACEHOLDER_PATTERN, (_match, indexStr: string) => {
     const i = Number.parseInt(indexStr, 10);
+    // Generic page.php fallback: surface the post's own content once (in the
+    // first content slot) and drop the exemplar's other zones, so the chrome
+    // is reused but the body isn't the exemplar's content.
+    if (options.fallbackTheContent) {
+      if (fallbackContentEmitted) return "";
+      fallbackContentEmitted = true;
+      return "<?php the_content(); ?>";
+    }
     const zone = page.zones[i];
     if (!zone) return "";
     if (options.inlineZones) {

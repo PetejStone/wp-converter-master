@@ -27,6 +27,7 @@ import {
 import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
 import {
   buildErrorTemplates,
+  buildPageFallbackTemplate,
   buildPageTemplates,
   buildSinglePostTemplate,
 } from "./templates";
@@ -472,6 +473,24 @@ export async function buildWpPackage(
   for (const t of templates) {
     await writeFile(join(templatesDir, t.filename), t.content);
   }
+  // pageSlugs that actually got a template file — the WXR only assigns
+  // _wp_page_template for these so no page references a missing template.
+  const templatedPageSlugs = new Set(templates.map((t) => t.slug));
+
+  // Generic page.php fallback so any page WITHOUT its own template (e.g. a
+  // sitemap page that failed to crawl) still renders the real site chrome
+  // instead of the bare index.php. Built from the first crawled page's
+  // captured header/nav/footer.
+  const fallbackTemplate = buildPageFallbackTemplate(
+    inputs.contentZones,
+    hierarchy,
+    urlMap,
+    iconMap,
+    pathFormIdToCf7Lookup,
+  );
+  if (fallbackTemplate) {
+    await writeFile(join(themeDir, "page.php"), fallbackTemplate.content);
+  }
 
   // single.php for post_type=post views. WP picks it up automatically by
   // filename — uses the first blog post's HTML as the chrome exemplar.
@@ -519,6 +538,7 @@ export async function buildWpPackage(
     blogEntries: inputs.ingest.blogEntries,
     testimonials: inputs.ingest.testimonials,
     testimonialBasePostId,
+    templatedPageSlugs,
   });
   await writeFile(join(outputDir, "import.xml"), wxr);
 

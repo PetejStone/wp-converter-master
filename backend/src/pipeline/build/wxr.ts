@@ -38,6 +38,13 @@ export interface WxrInputs {
   // mirroring how Cf7Forms are allocated upstream.
   testimonials?: Testimonial[];
   testimonialBasePostId?: number;
+  // pageSlugs for which a per-page template file (templates/page-<slug>.php)
+  // was actually generated. _wp_page_template is only emitted for these — a
+  // page absent here (e.g. one that failed to crawl, so buildPageTemplates
+  // produced no file) must NOT reference a missing template, or WordPress
+  // falls back to the broken bare index.php. When undefined, every non-blog
+  // page is assumed templated (back-compat for callers that don't pass it).
+  templatedPageSlugs?: Set<string>;
 }
 
 const PRIMARY_MENU_TERM_ID = 1;
@@ -231,13 +238,17 @@ function buildPageItem(
   ].filter((s) => s.length > 0);
 
   // _wp_page_template only applies to post_type=page — blog posts use the
-  // theme's single.php fallback, not a named page template.
-  const templateMeta = node.isBlogPost
-    ? ""
-    : postmeta(
-        "_wp_page_template",
-        `templates/page-${pageSlug}.php`,
-      );
+  // theme's single.php fallback, not a named page template. Only assign it
+  // when a per-page template was actually generated for this slug; otherwise
+  // the page would point at a non-existent file and render via the broken
+  // bare index.php. Pages with no template fall back to the theme's generic
+  // page.php instead (see buildPageFallbackTemplate).
+  const hasTemplate =
+    !inputs.templatedPageSlugs || inputs.templatedPageSlugs.has(pageSlug);
+  const templateMeta =
+    node.isBlogPost || !hasTemplate
+      ? ""
+      : postmeta("_wp_page_template", `templates/page-${pageSlug}.php`);
 
   const meta = [...zoneMeta, templateMeta, ...yoastMeta]
     .filter((s) => s.length > 0)
@@ -250,9 +261,10 @@ function buildPageItem(
   // set up by the importer (postname permalinks include the date prefix
   // for posts by default).
   const postParent = node.isBlogPost ? 0 : node.parentPostId;
-  const pageTemplateLine = node.isBlogPost
-    ? ""
-    : `\n      <wp:page_template><![CDATA[templates/page-${pageSlug}.php]]></wp:page_template>`;
+  const pageTemplateLine =
+    node.isBlogPost || !hasTemplate
+      ? ""
+      : `\n      <wp:page_template><![CDATA[templates/page-${pageSlug}.php]]></wp:page_template>`;
 
   // Blog posts: emit the captured `<article class="cnt-stl">` inner HTML
   // as post_content so single.php's the_content() call renders it. Use a
