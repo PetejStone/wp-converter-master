@@ -35,23 +35,35 @@ export interface UscUtilityScriptResult {
   failedDownloads: { url: string; error: string }[];
 }
 
-// Discover, fetch, and rewrite Scorpion's runtime-loaded utility scripts.
+// Discover and fetch Scorpion's runtime-loaded utility scripts.
 //
-// Operates in three phases:
+// Operates in two phases:
 //   1. Scan every JS file already in `jsDir` for `/common/usc/p/<name>.js`
 //      occurrences. The set of unique basenames is the runtime dependency
 //      list — these are the scripts Scorpion will require2() at runtime.
 //   2. For each referenced basename that we don't already have a local
 //      copy of, fetch it from `<siteUrl>/common/usc/p/<name>.js` and save
-//      under `jsDir/<name>.js`.
-//   3. Walk every JS file (existing + newly fetched) and replace the
-//      literal "/common/usc/p/" prefix with `jsWpPathPrefix + "/"`. This
-//      redirects both static references and dynamic require2() calls to
-//      the theme path WordPress actually serves the files from.
+//      under `jsDir/<name>.js`. (index.ts then copies every jsDir file into
+//      the export's `common/usc/p/` directory, and functions.php serves
+//      `/common/usc/p/<name>.js` from the theme — so the path resolves on
+//      the WP host.)
+//
+// IMPORTANT: we deliberately do NOT rewrite the "/common/usc/p/" prefix
+// inside the JS to the theme path. Scorpion's require2() module loader only
+// recognises `usc/p/<name>` and `/common/usc/p/<name>.js` as fetchable
+// module locations; any other path (e.g. /wp-content/themes/.../js/<name>.js)
+// is treated as an already-satisfied module, so the loader fires the
+// dependency callback WITHOUT ever loading the file. Rewriting therefore
+// silently breaks every runtime-loaded utility — most visibly the tabbable
+// subsystem (mobile drawer + desktop fly-out menus), whose
+// passive-tabbable-init.js never executes and leaves USC.tabbable undefined.
+// Leaving the path as `/common/usc/p/` lets the loader fetch it correctly
+// (verified: all five tabbable modules load 200 and USC.tabbable is defined).
 export async function discoverAndRewriteUscUtilityScripts(
   options: UscUtilityScriptOptions,
 ): Promise<UscUtilityScriptResult> {
-  const { siteUrl, jsDir, jsWpPathPrefix, jsFilenameByUrl } = options;
+  // jsWpPathPrefix is intentionally unused now — see the no-rewrite note above.
+  const { siteUrl, jsDir, jsFilenameByUrl } = options;
   const newlyDownloaded = new Map<string, string>();
   const failedDownloads: { url: string; error: string }[] = [];
 
@@ -115,15 +127,9 @@ export async function discoverAndRewriteUscUtilityScripts(
     }
   }
 
-  // ---- Phase 3: rewrite "/common/usc/p/" → theme JS WP path in every JS ----
-  const themePrefix = `${jsWpPathPrefix}/`;
-  const rewrittenFilenames: string[] = [];
-  for (const [filename, content] of fileContents) {
-    if (!content.includes(USC_PATH_PREFIX)) continue;
-    const rewritten = content.split(USC_PATH_PREFIX).join(themePrefix);
-    await writeFile(join(jsDir, filename), rewritten);
-    rewrittenFilenames.push(filename);
-  }
-
-  return { newlyDownloaded, rewrittenFilenames, failedDownloads };
+  // NOTE: no rewrite phase. The "/common/usc/p/" references are left intact
+  // so Scorpion's require2() loader resolves and fetches them (see the
+  // function-level comment above). `rewrittenFilenames` stays empty; it's
+  // retained on the result for API compatibility.
+  return { newlyDownloaded, rewrittenFilenames: [], failedDownloads };
 }

@@ -316,11 +316,18 @@ class Scorpion_Nav_Walker extends Walker_Nav_Menu {
             || in_array('current-menu-ancestor', $classes, true);
 
         if ($depth === 0) {
-            // Top-level item: classic Scorpion tab.
+            // Top-level item: classic Scorpion tab. NOTE: top-level items must
+            // NOT get the el-tab-box class — the original Scorpion markup only
+            // marks DEEPER submenu items (depth >= 1, with grandchildren) as
+            // el-tab-box. The top-level fly-out opens on hover (the .fly-nv
+            // child), not via the click-driven tabbable system. Adding
+            // el-tab-box here turned every top-level item into a phantom
+            // "container" tab-box whose panels all live in nested sub-boxes;
+            // Scorpion's Tabbable init then strips every panel via
+            // removeSubs() and crashes on panels[0].classList — which broke
+            // the whole nav (the mobile drawer lives inside this same <nav>,
+            // so its tabbable init resolves up to this box and crashed too).
             $li_class = 'flx ato rlt';
-            if ($has_children) {
-                $li_class .= ' el-tab-box';
-            }
             if ($is_active) {
                 $li_class .= ' selected';
             }
@@ -409,6 +416,118 @@ function scorpion_render_primary_nav() {
         'container' => false,
         'items_wrap' => '%3$s',
         'walker' => new Scorpion_Nav_Walker(),
+        'fallback_cb' => false,
+    ));
+}
+
+/**
+ * Walker for the mobile slide-drawer (#HeaderS4MobileNav). Renders the SAME
+ * "primary" menu the desktop nav uses, but in Scorpion's mobile markup. The
+ * structure is depth-specific and must match the original exactly, because
+ * Scorpion's tabbable JS (passive-tabbable-init) keys on these classes:
+ *
+ *   - A parent's children open a SLIDE PANEL. Top-level (depth 0) panels are
+ *     a span.lvl-2.el-panel seeded with a "Main Menu" back row; deeper
+ *     (depth >= 1) panels are a bare ul.el-panel.sld with NO back row.
+ *   - el-tab-box marks parent <li>s at depth >= 1 ONLY. That class is what
+ *     groups a nested tab + its panel into its own Tabbable instance via
+ *     handleSubs(); WITHOUT it the init strips every panel as a "sub" and
+ *     crashes on panels[0].classList (the reported bug). Top-level parents
+ *     deliberately omit it — their slide is driven by the drawer panel system,
+ *     not a tab-box, matching the original markup.
+ *   - data-closing="true" on depth >= 1 <li>s; the depth-0/1/2 <a> classes
+ *     and the depth-0 vs depth>=1 toggle classes differ, all mirrored below.
+ */
+class Scorpion_Mobile_Nav_Walker extends Walker_Nav_Menu {
+    public function start_lvl(&$output, $depth = 0, $args = null) {
+        if ($depth === 0) {
+            // Top-level item's children: a "lvl-2" slide panel that opens over
+            // the root list, seeded with a "Main Menu" back row.
+            $output .= '<span class="lvl-2 el-panel full ui-scroll" role="menu">';
+            $output .= '<ul class="bg-bx ulk-bg" role="menu">';
+            $output .= '<li class="el-sec-tab bdr_bt pd_h flx f_m">';
+            $output .= '<svg viewBox="0 0 24 24" class="blk icn clr-btn" role="presentation"><path d="M15 6l-6 6 6 6z"></path></svg>';
+            $output .= '<a class="fnt_nv-lnk clr-swp pd_bt pd_tp"><span class="mrg_lt-30">Main Menu</span></a>';
+            $output .= '</li>';
+        } else {
+            // Deeper children: an inline sliding panel, no back row. This <ul>
+            // is the .el-panel owned by the parent <li>'s .el-tab-box.
+            $output .= '<ul class="full el-panel sld pd_h-30 bdr_tp pd_tp-20 pd_bt-20" role="menu">';
+        }
+    }
+    public function end_lvl(&$output, $depth = 0, $args = null) {
+        if ($depth === 0) {
+            $output .= '</ul></span>';
+        } else {
+            $output .= '</ul>';
+        }
+    }
+    public function start_el(&$output, $item, $depth = 0, $args = null, $id = 0) {
+        $classes = empty($item->classes) ? array() : (array) $item->classes;
+        $has_children = in_array('menu-item-has-children', $classes, true);
+        $is_active = in_array('current-menu-item', $classes, true)
+            || in_array('current-menu-parent', $classes, true)
+            || in_array('current-menu-ancestor', $classes, true);
+
+        if ($depth === 0) {
+            // Top-level: NO el-tab-box (drawer system owns the slide), no
+            // data-closing.
+            $li_class = $has_children ? 'flx f_m f_wrp bdr_bt pd_h' : 'flx bdr_bt pd_h';
+            $a_class = 'ato blk fnt_nv-lnk clr-swp pd_tp pd_bt';
+            $data_closing = '';
+        } elseif ($depth === 1) {
+            // First sub-level: parents become their own .el-tab-box.
+            $li_class = $has_children ? 'flx f_m f_wrp el-tab-box pd_h bdr_bt' : 'pd_h bdr_bt';
+            $a_class = 'fnt_nv-lnk ato blk clr-swp pd_bt-40 pd_tp-40';
+            $data_closing = ' data-closing="true"';
+        } else {
+            // Grandchild and deeper: same el-tab-box treatment for parents.
+            $li_class = $has_children ? 'flx f_m f_wrp el-tab-box' : '';
+            $a_class = 'fnt_nv-lnk blk pd_tp-20 pd_bt-20 clr-swp';
+            $data_closing = '';
+        }
+        if ($is_active) {
+            $li_class = trim('selected ' . $li_class);
+        }
+
+        $target = !empty($item->target) ? ' target="' . esc_attr($item->target) . '"' : ' target=""';
+        $li_attr = $li_class !== '' ? ' class="' . esc_attr($li_class) . '"' : '';
+        $output .= '<li' . $li_attr . $data_closing . '>';
+        $output .= '<a class="' . esc_attr($a_class) . '" href="' . esc_url($item->url) . '" role="menuitem"' . $target . '>' . esc_html($item->title) . '</a>';
+        if ($has_children) {
+            $aria = esc_attr('Open child menu of ' . $item->title);
+            if ($depth === 0) {
+                // Top-level toggle: opens the lvl-2 panel.
+                $output .= '<span class="el-tab fit blk mrg_lt-90 clr-lnk" aria-label="' . $aria . '">';
+                $output .= '<svg viewBox="0 0 24 24" class="blk icn" role="presentation"><path d="M9 6l6 6-6 6z"></path></svg>';
+                $output .= '</span>';
+            } else {
+                // Nested toggle: the .el-tab inside the .el-tab-box.
+                $output .= '<span class="el-tab tb-arw fit blk mrg_lt-90 clr-btn" aria-label="' . $aria . '">';
+                $output .= '<svg viewBox="0 0 24 24" class="blk icn" role="presentation"><path d="M7 10l5 5 5-5z"></path></svg>';
+                $output .= '</span>';
+            }
+        }
+    }
+    public function end_el(&$output, $item, $depth = 0, $args = null) {
+        $output .= '</li>';
+    }
+}
+
+/**
+ * Renders the mobile drawer from the SAME "primary" menu the desktop nav
+ * uses, so a single edit at Appearance → Menus updates both. No-op until a
+ * primary menu exists (keeps uncrawled-site templates rendering cleanly).
+ */
+function scorpion_render_mobile_nav() {
+    if (!has_nav_menu('primary')) {
+        return;
+    }
+    wp_nav_menu(array(
+        'theme_location' => 'primary',
+        'container' => false,
+        'items_wrap' => '%3$s',
+        'walker' => new Scorpion_Mobile_Nav_Walker(),
         'fallback_cb' => false,
     ));
 }

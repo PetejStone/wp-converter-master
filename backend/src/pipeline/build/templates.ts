@@ -302,6 +302,23 @@ function buildPageTemplate(
     }
   }
 
+  // Mobile drawer: swap the baked-in <ul> inside <nav id="HeaderS4MobileNav">
+  // for the primary menu rendered with the mobile walker. It shares the SAME
+  // "primary" menu as the desktop nav, so one edit at Appearance → Menus
+  // updates both. Without this, the drawer keeps the exemplar page's static
+  // links and "selected" state — diverging from the now-dynamic desktop nav.
+  const mobileNavToken = "WP_SCORPION_MOBILE_NAV";
+  let mobileNavInjected = false;
+  const $mobileNav = $("#HeaderS4MobileNav");
+  if ($mobileNav.length > 0) {
+    const $ul = $mobileNav.find("ul").first();
+    if ($ul.length > 0) {
+      $ul.empty();
+      $ul.append(`<!-- ${mobileNavToken} -->`);
+      mobileNavInjected = true;
+    }
+  }
+
   // Swap Scorpion's contact form for the matching CF7 shortcode. Scorpion
   // wraps each contact panel in a <form> shell (ASP.NET WebForms) with the
   // actual field repeater in a <div class="…ui-contact-form…"> — surrounded
@@ -393,6 +410,12 @@ function buildPageTemplate(
     html = html.replace(
       `<!-- ${primaryNavToken} -->`,
       "<?php scorpion_render_primary_nav(); ?>",
+    );
+  }
+  if (mobileNavInjected) {
+    html = html.replace(
+      `<!-- ${mobileNavToken} -->`,
+      "<?php scorpion_render_mobile_nav(); ?>",
     );
   }
   if (footerQuickLinksInjected) {
