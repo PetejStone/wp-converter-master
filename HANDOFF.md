@@ -127,10 +127,13 @@ WordPress is now reachable at **http://localhost:8080/** — on first visit it s
 1. Run a conversion through the normal flow (landing form on http://localhost:3000 OR `curl -X POST /api/jobs` OR `npx tsx src/scripts/run-extract.ts <site_url>` with the backend running). Wait for status `ready`.
 2. From `backend/`:
    ```
-   npm run wp:import                # imports the most recent ready job
-   npm run wp:import -- --clean     # wipe existing pages/media first, then import
-   npm run wp:import -- <jobId>     # import a specific job by id
+   npm run wp:import                       # imports the most recent ready job
+   npm run wp:import -- --clean            # wipe existing pages/media first, then import
+   npm run wp:import -- <jobId>            # import a specific job by id
+   npm run wp:import -- --via-plugin       # run the whole migration through the Scorpion Migration Helper plugin
+   npm run wp:import -- --via-plugin --clean   # from-scratch run via the helper plugin
    ```
+   `--via-plugin` is the real end-to-end test of the one-click flow a non-technical user runs: instead of the wp-cli steps, it copies the generated `scorpion-migration-helper` plugin into the WP container, activates it, and runs `smh_run_migration()` (install required plugins → register CPTs → import the WXR → wire redirects/menus → pin the front page) entirely from PHP. After it finishes, the helper screen is at **http://localhost:8080/wp-admin/tools.php?page=scorpion-migration**.
 3. Open **http://localhost:8080/** to see the converted site. The home page is auto-pinned as the WP front page.
 4. Admin: **http://localhost:8080/wp-admin/** with `admin` / `admin`.
 

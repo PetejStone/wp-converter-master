@@ -61,7 +61,28 @@
       "WebFetch(domain:www.tennesseeplumbinginc.com)",
       "Bash(curl *)",
       "Bash(npx --prefix backend tsc --noEmit -p backend)",
-      "PowerShell(npx tsc --noEmit 2>&1 | Select-Object -First 30)"
+      "PowerShell(npx tsc --noEmit 2>&1 | Select-Object -First 30)",
+      "PowerShell(npx --prefix backend tsc -p backend --noEmit)",
+      "Bash(awk '/<wp:post_name><!\\\\[CDATA\\\\[clogged-drains/,/<\\\\/item>/' .conversions/248474a4-c05a-4bcd-a82a-e6bf53469b9c/output/import.xml)",
+      "Bash(awk '/<wp:post_name><!\\\\[CDATA\\\\[kingsport-plumbing-services/,/<\\\\/item>/' .conversions/248474a4-c05a-4bcd-a82a-e6bf53469b9c/output/import.xml)",
+      "Bash(npx --prefix . tsc --noEmit)",
+      "Bash(awk '/<table id=\"TestimonialTable\"/,/<\\\\/table>/')",
+      "Bash(grep -n \"form\\\\\\\\\\\\\\\\'s\\\\|client\\\\\\\\\\\\\\\\'s\" ./_smh.php)",
+      "Bash(python3 -c ' *)",
+      "Bash(node -e ' *)",
+      "Bash(rm -f ./_pg.html)",
+      "PowerShell(docker exec $wp sed -n '40,110p' /var/www/html/wp-content/plugins/contact-form-7/includes/contact-form-functions.php)",
+      "PowerShell($wp = \"scorpion-wp-converter-wp\")",
+      "PowerShell(docker exec scorpion-wp-converter-backend *)",
+      "PowerShell(docker exec $wp sed -n '255,360p' /var/www/html/wp-content/plugins/custom-post-type-ui/custom-post-type-ui.php)",
+      "PowerShell(docker exec $wp sed -n '758,775p' /var/www/html/wp-content/plugins/wordpress-importer/class-wp-import.php)",
+      "PowerShell(docker cp scorpion-wp-converter-backend:/app/_tmp-helper.php \"C:\\\\Users\\\\Jesse.Solis\\\\OneDrive - Scorpion\\\\Desktop\\\\wp-converter\\\\_tmp-helper.php\")",
+      "PowerShell(docker cp \"C:\\\\Users\\\\Jesse.Solis\\\\OneDrive - Scorpion\\\\Desktop\\\\wp-converter\\\\_tmp-helper.php\" scorpion-wp-converter-wp:/var/www/html/_tmp-helper.php)",
+      "PowerShell(docker exec scorpion-wp-converter-wp php -l /var/www/html/_tmp-helper.php)",
+      "PowerShell(docker exec scorpion-wp-converter-wp *)",
+      "PowerShell(docker exec $wp grep -n \"page_template\\\\|_wp_page_template\" /var/www/html/wp-content/plugins/wordpress-importer/class-wp-import.php)",
+      "PowerShell(docker exec $wp sed -n '975,1010p;1685,1705p' /var/www/html/wp-content/plugins/wordpress-importer/class-wp-import.php)",
+      "PowerShell(docker exec $wp sh -c \"ls /var/www/html/wp-content/themes/scorpion-converted/templates/ | wc -l\")"
     ]
   }
 }
